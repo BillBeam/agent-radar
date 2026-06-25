@@ -1,0 +1,28 @@
+# secrets & local config
+config.toml
+*.secret
+
+# data / runtime artifacts (keep dir structure via .gitkeep)
+data/candidates/*
+data/digests/*
+data/trace/*
+data/metrics/*
+data/feedback/*
+data/state/*
+data/self_improve/proposals/*
+data/self_improve/eval_runs/*
+!data/**/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# os
+.DS_Store

@@ -1,0 +1,220 @@
+# Agent Radar 源注册表 — 高信号 agent/harness 信息源（单独当 reading list 都值）
+# 每条: id / name / category / type / url / weight / enabled / params
+# 加一个源 = 在这里加一段，无需改代码。`python -m radar --mode validate` 逐个验活。
+# category: harness(工程深度,权重最高) / labs / china / framework / papers / community / newsletter
+
+sources:
+  # ===== A. Harness / 工程深度（权重最高）=====
+  - id: simonwillison
+    name: Simon Willison's Weblog
+    category: harness
+    type: rss
+    url: https://simonwillison.net/atom/everything/
+    weight: 1.4
+  - id: latent-space
+    name: Latent Space
+    category: harness
+    type: rss
+    url: https://www.latent.space/feed
+    weight: 1.3
+  - id: anthropic-engineering
+    name: Anthropic Engineering
+    category: harness
+    type: html
+    url: https://www.anthropic.com/engineering
+    weight: 1.5
+    params: {url_contains: "/engineering/", limit: 20}
+  - id: gh-claude-code
+    name: Claude Code (releases)
+    category: harness
+    type: github_releases
+    url: https://github.com/anthropics/claude-code
+    weight: 1.4
+    params: {repo: anthropics/claude-code}
+  - id: gh-openhands
+    name: OpenHands (releases)
+    category: harness
+    type: github_releases
+    url: https://github.com/All-Hands-AI/OpenHands
+    weight: 1.1
+    params: {repo: All-Hands-AI/OpenHands}
+  - id: gh-aider
+    name: aider (releases)
+    category: harness
+    type: github_releases
+    url: https://github.com/Aider-AI/aider
+    weight: 1.1
+    params: {repo: Aider-AI/aider}
+  - id: gh-cline
+    name: Cline (releases)
+    category: harness
+    type: github_releases
+    url: https://github.com/cline/cline
+    weight: 1.1
+    params: {repo: cline/cline}
+  - id: gh-opencode
+    name: opencode (releases)
+    category: harness
+    type: github_releases
+    url: https://github.com/sst/opencode
+    weight: 1.0
+    params: {repo: sst/opencode}
+  - id: gh-codex
+    name: OpenAI Codex CLI (releases)
+    category: harness
+    type: github_releases
+    url: https://github.com/openai/codex
+    weight: 1.1
+    params: {repo: openai/codex}
+  - id: gh-gemini-cli
+    name: Gemini CLI (releases)
+    category: harness
+    type: github_releases
+    url: https://github.com/google-gemini/gemini-cli
+    weight: 1.0
+    params: {repo: google-gemini/gemini-cli}
+  - id: gh-swe-agent
+    name: SWE-agent (releases)
+    category: harness
+    type: github_releases
+    url: https://github.com/SWE-agent/SWE-agent
+    weight: 1.0
+    params: {repo: SWE-agent/SWE-agent}
+
+  # ===== B. 前沿实验室 =====
+  - id: openai-news
+    name: OpenAI News
+    category: labs
+    type: rss
+    url: https://openai.com/news/rss.xml
+    weight: 1.2
+  - id: deepmind-blog
+    name: Google DeepMind Blog
+    category: labs
+    type: rss
+    url: https://deepmind.google/blog/rss.xml
+    weight: 1.1
+  - id: anthropic-news
+    name: Anthropic News
+    category: labs
+    type: html
+    url: https://www.anthropic.com/news
+    weight: 1.1
+    params: {url_contains: "/news/", limit: 20}
+
+  # ===== C. 中国实验室 =====
+  - id: qwen-blog
+    name: Qwen (Alibaba)
+    category: china
+    type: rss
+    url: https://qwenlm.github.io/blog/index.xml
+    weight: 1.1
+  - id: gh-qwen
+    name: Qwen (releases)
+    category: china
+    type: github_releases
+    url: https://github.com/QwenLM/Qwen3
+    weight: 1.0
+    enabled: false   # Qwen doesn't cut GitHub releases; qwen-blog covers it
+    params: {repo: QwenLM/Qwen3}
+  - id: gh-deepseek
+    name: DeepSeek-V3 (releases)
+    category: china
+    type: github_releases
+    url: https://github.com/deepseek-ai/DeepSeek-V3
+    weight: 1.0
+    params: {repo: deepseek-ai/DeepSeek-V3}
+
+  # ===== D. 框架与配套 =====
+  - id: langchain-changelog
+    name: LangChain Changelog
+    category: framework
+    type: rss
+    url: https://changelog.langchain.com/feed
+    weight: 1.1
+  - id: huggingface-blog
+    name: Hugging Face Blog
+    category: framework
+    type: rss
+    url: https://huggingface.co/blog/feed.xml
+    weight: 1.0
+  - id: gh-langgraph
+    name: LangGraph (releases)
+    category: framework
+    type: github_releases
+    url: https://github.com/langchain-ai/langgraph
+    weight: 1.0
+    params: {repo: langchain-ai/langgraph}
+  - id: gh-mcp-servers
+    name: MCP servers (releases)
+    category: framework
+    type: github_releases
+    url: https://github.com/modelcontextprotocol/servers
+    weight: 1.0
+    params: {repo: modelcontextprotocol/servers}
+  - id: gh-autogen
+    name: AutoGen (releases)
+    category: framework
+    type: github_releases
+    url: https://github.com/microsoft/autogen
+    weight: 0.9
+    params: {repo: microsoft/autogen}
+  - id: gh-letta
+    name: Letta / MemGPT (releases)
+    category: framework
+    type: github_releases
+    url: https://github.com/letta-ai/letta
+    weight: 1.0
+    params: {repo: letta-ai/letta}
+
+  # ===== E. 论文 =====
+  - id: arxiv-agents
+    name: arXiv (agent/LLM, recency)
+    category: papers
+    type: arxiv
+    url: http://export.arxiv.org/api/query
+    weight: 1.1
+    params:
+      categories: [cs.AI, cs.CL, cs.MA, cs.SE, cs.LG]
+      keywords: [agent, agentic, LLM, language model, tool use, retrieval, reasoning]
+      max_results: 50
+      max_age_hours: 96   # arXiv announces with ~1-2d lag → wider leash
+  - id: hf-daily-papers
+    name: Hugging Face Daily Papers
+    category: papers
+    type: hf_papers
+    url: https://huggingface.co/api/daily_papers
+    weight: 1.1
+    params: {max_age_hours: 96}
+
+  # ===== F. 社区 =====
+  - id: hackernews
+    name: Hacker News (agent/LLM, points-gated)
+    category: community
+    type: hackernews
+    url: https://hn.algolia.com/api/v1/search_by_date
+    weight: 0.9
+    params:
+      keywords: [AI agent, agentic, LLM agent, MCP, tool use, agent harness, coding agent]
+      min_points: 60
+      per_kw: 20
+
+  # ===== G. Newsletter（周更为主）=====
+  - id: import-ai
+    name: Import AI (Jack Clark)
+    category: newsletter
+    type: rss
+    url: https://importai.substack.com/feed
+    weight: 1.0
+  - id: interconnects
+    name: Interconnects (Nathan Lambert)
+    category: newsletter
+    type: rss
+    url: https://www.interconnects.ai/feed
+    weight: 1.0
+  - id: ahead-of-ai
+    name: Ahead of AI (Sebastian Raschka)
+    category: newsletter
+    type: rss
+    url: https://magazine.sebastianraschka.com/feed
+    weight: 1.0

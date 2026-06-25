@@ -1,0 +1,12 @@
+# Noise rejection — low-signal-for-harness-depth items get dropped or down-weighted.
+# The agent appends here over time (Face 2 "this source is too marketing-y" / evolve).
+
+# Hard-block these source ids entirely:
+source_ids: []
+
+# Drop items whose TITLE matches any of these (case-insensitive regex):
+title_patterns:
+  - "raises \\$?\\d[\\d.]*\\s*(m|b|million|billion).*(funding|seed|series|round)"
+  - "\\b(webinar|sponsored|advertisement|giveaway)\\b"
+  - "^top \\d+ .*(tools|tips|tricks|prompts)"
+  - "\\b(hiring|we're hiring|job opening)\\b"

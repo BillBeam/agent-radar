@@ -1,0 +1,43 @@
+# Agent-engineering topic taxonomy. Triage uses `topics` to tag + score each item;
+# self_improve uses `self_components` to detect items that could upgrade radar itself.
+# Edit freely (Face 2 / evolve tune this) — no code change needed.
+
+topics:
+  - orchestration
+  - task-decomposition
+  - planning            # CoT / ToT / plan-and-execute
+  - multi-agent
+  - reflection
+  - tool-use
+  - mcp                 # Model Context Protocol / function calling
+  - human-in-the-loop
+  - llmops
+  - observability       # tracing, monitoring
+  - hallucination       # detection / grounding
+  - eval                # eval frameworks, metrics
+  - data-loop           # feedback mining, hard-negative mining
+  - rag
+  - rerank
+  - knowledge-graph
+  - context-management  # context window, compaction
+  - memory
+  - sandbox             # isolation, containerization
+  - prompt-engineering
+  - fine-tuning         # SFT / LoRA
+  - quantization
+  - caching
+  - cost-token-budget
+
+# radar's own components — an item tagged self-applicable maps to one of these
+self_components:
+  - fetch
+  - triage
+  - quality_gate
+  - deepread
+  - memory
+  - retrieval
+  - synthesize
+  - eval
+  - self_improve
+  - orchestration
+  - llm_backend

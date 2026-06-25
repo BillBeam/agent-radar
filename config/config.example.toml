@@ -1,0 +1,27 @@
+# Copy to ../config.toml (gitignored) and fill in. All fields optional — defaults shown.
+# The agent edits this file in conversation when you ask it to (Face 2 self-iteration).
+
+timezone = "Asia/Shanghai"
+daily_max_items = 10
+weekly_max_items = 25
+freshness_hours = 48.0          # daily window; dedup makes a generous window safe (per-source override via sources.yaml max_age_hours)
+weekly_freshness_hours = 192.0  # weekly: ~8 days
+relevance_threshold = 6.0       # triage score below this is dropped (宁缺毋滥)
+deepread_top_k = 6              # how many top items get a full 中文详解
+token_budget_per_run = 200000
+# http_proxy = "http://127.0.0.1:7890"  # uncomment if needed for overseas feeds
+
+[models]            # claude -p model tier per stage (controls subscription quota)
+triage = "haiku"
+deepread = "sonnet"
+synthesize = "sonnet"
+
+[channels]
+local = true        # always-on markdown archive under data/digests/
+macos = true        # desktop notification when a digest is ready
+
+# Paste your DingTalk custom-robot webhook here to enable phone push.
+# Create: DingTalk group → 群设置 → 智能群助手 → 添加机器人 → 自定义 → 安全设置=加签.
+# [channels.dingtalk]
+# webhook = "https://oapi.dingtalk.com/robot/send?access_token=XXXX"
+# secret  = "SECxxxx"   # the 加签 secret (recommended security mode)
