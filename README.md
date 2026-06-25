@@ -143,9 +143,11 @@ agent-radar/
 
 ## 给协作者（含网页版 Claude）的说明
 
-这个项目是**通过和 Claude 对话来开发的**。如果你（人或 AI）要继续开发：
+这个项目由**三方协作开发**：项目发起者（定方向/做决策）+ Claude Code（本地，做一切实现）+ 网页版 Claude（连接本仓库，审查代码 + 设计提示词）。协作模式详见 **[docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)**。
 
-1. **先读 [docs/SPEC.md](docs/SPEC.md)** —— 它包含完整的项目意图、所有硬性约束、架构设计、每个组件的实现状态、以及 P1→P4 的详细路线。这是唯一的「真相源」。
+如果你（人或 AI）要继续开发：
+
+1. **先读 [docs/SPEC.md](docs/SPEC.md)** —— 完整的项目意图、所有硬性约束、架构设计、每个组件的实现状态、P1→P4 路线。这是唯一的技术「真相源」。**再读 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)** 了解需求全貌与三方协作方式。
 2. **遵守约束**：技术实现要前沿且真实可 defend；实现前先调研该组件的当下 SOTA（读源码 + web）；生产级健壮；中文详解要讲懂；宁缺毋滥。
 3. **架构纪律**：新能力走 adapter + 注册表，不要改核心契约（`radar/core/models.py` 的 `Item`/`Digest`）。
 4. **跑 `python -m radar --mode doctor`** 确认环境，`pytest` 确认没改坏。
