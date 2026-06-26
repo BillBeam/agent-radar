@@ -32,8 +32,16 @@ class TriageStage(Stage):
     name = "triage"
 
     def run(self, ctx: RunContext) -> None:
-        pool = sorted(ctx.candidates, key=lambda it: (it.weight, _recency_key(it)), reverse=True)
-        pool = pool[: ctx.config.triage_pool_cap]
+        # Score the WHOLE pool — never pre-cut by source weight (a low-weight
+        # community source's gem must still reach triage/rerank). Only a
+        # recency-based safety trim if the pool is enormous.
+        cap = ctx.config.triage_pool_cap
+        if len(ctx.candidates) > cap:
+            pool = sorted(ctx.candidates, key=_recency_key, reverse=True)[:cap]
+            ctx.log.warn("triage pool exceeded cap — trimmed by recency (not weight)",
+                         n=len(ctx.candidates), cap=cap)
+        else:
+            pool = list(ctx.candidates)
         if not pool:
             ctx.items = []
             return

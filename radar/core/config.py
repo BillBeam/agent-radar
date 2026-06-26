@@ -34,6 +34,7 @@ class Paths:
     taxonomy_yaml = CONFIG_DIR / "taxonomy.yaml"
     blocklist_yaml = CONFIG_DIR / "blocklist.yaml"
     seen_json = DATA_DIR / "state" / "seen.json"
+    first_seen_json = DATA_DIR / "state" / "first_seen.json"
     memory_db = DATA_DIR / "memory.db"
 
 
@@ -70,6 +71,7 @@ class RadarConfig(BaseModel):
     triage_pool_cap: int = 200         # safety ceiling on candidates sent to triage (recency-trimmed if exceeded)
     finalist_pool: int = 24            # how many survivors go to the rerank stage
     max_per_source: int = 3            # diversity: max items from one source in the final selection
+    max_undated_per_source: int = 8    # bounded history: cap dateless (back-catalog) items per source
     deepread_top_k: int = 6
 
     token_budget_per_run: int = 200_000

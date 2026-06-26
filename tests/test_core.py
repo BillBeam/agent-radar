@@ -11,8 +11,12 @@ from radar.llm._json import extract_json
 
 
 def _ctx(mode="daily"):
+    from radar.obs import Logger, Tracer
     cfg = load_config()
-    return RunContext(run_id="test", mode=mode, config=cfg, window=TimeWindow(48))
+    ctx = RunContext(run_id="test", mode=mode, config=cfg, window=TimeWindow(48))
+    ctx.log = Logger("test", echo=False)   # no path → no-op, but stages can call .info/.warn
+    ctx.trace = Tracer("test")
+    return ctx
 
 
 def _item(score=None, title="t", weight=1.0, cat="harness", url=None):
@@ -66,7 +70,7 @@ def test_threshold_rule():
 def test_cap_rule_sorts_and_caps():
     from radar.quality.rules import CapRule
     ctx = _ctx()
-    ctx.config.daily_max_items = 2
+    ctx.config.finalist_pool = 2   # CapRule now caps to the finalist pool (rerank picks final)
     items = [_item(score=5), _item(score=9), _item(score=7)]
     kept = CapRule().apply(items, ctx)
     assert [i.score for i in kept] == [9, 7]
@@ -100,6 +104,52 @@ def test_clean_title():
     assert _clean_title("Featured How we contain Claude") == "How we contain Claude"
     long = "word " * 40
     assert _clean_title(long).endswith("…")
+
+
+# ---- B: full-pool triage / rerank diversity / recency split ----
+def test_triage_scores_full_pool_no_weight_cut():
+    from radar.stages.triage import TriageStage
+    ctx = _ctx()
+    ctx.llm = None  # → fallback path, but pool must still be the FULL candidate set
+    ctx.candidates = [_item(weight=0.5, title="low"), _item(weight=1.5, title="high"),
+                      _item(weight=1.0, title="mid")]
+    TriageStage().run(ctx)
+    assert {it.title for it in ctx.items} == {"low", "high", "mid"}  # low-weight survives
+
+
+def test_rerank_diversity_quota():
+    from collections import Counter
+    from radar.stages.rerank import RerankStage
+    ctx = _ctx()
+    ctx.llm = None  # → score-order, deterministic
+    ctx.config.daily_max_items = 4
+    ctx.config.max_per_source = 2
+    items = []
+    for i in range(6):
+        it = _item(score=9 - i, title=f"t{i}")
+        it.source_id = "A" if i < 4 else "B"
+        items.append(it)
+    ctx.items = items
+    RerankStage().run(ctx)
+    counts = Counter(it.source_id for it in ctx.items)
+    assert len(ctx.items) == 4 and counts["A"] <= 2  # per-source cap enforced
+
+
+def test_synthesize_recency_split(tmp_path, monkeypatch):
+    import radar.stages.synthesize as S
+    monkeypatch.setattr(S.Paths, "digests", tmp_path)
+    from datetime import datetime, timezone
+    ctx = _ctx()
+    ctx.llm = None
+    ctx.sources = []
+    dated = _item(title="fresh one", score=9)
+    dated.published_at = datetime.now(timezone.utc)
+    undated = _item(title="old one", score=8)
+    undated.published_at = None
+    ctx.items = [dated, undated]
+    S.SynthesizeStage().run(ctx)
+    md = ctx.digest.markdown
+    assert "🆕 今日新增" in md and "往期补课" in md and "今日新增 1" in md
 
 
 # ---- C: salvage / lock / health / last_run ----

@@ -24,3 +24,13 @@
 **last_run.json**：runner finally 落 run 摘要（源健康/候选/精选/深读/triage 覆盖率/降级/**token 用量**/错误），`status` 读它。token 预算暂软提示（超限 warn）。
 
 **run-lock**：`core/lock.py`，`data/state/run.lock`(PID+时间戳)，活进程持有则中止、僵死锁(进程死/超 1h)自动夺回。**为什么**：deliver 后才写 seen，两个并发跑会双投递 + 抢 state。**为什么不**用 OS 文件锁(flock)：跨平台 + 要可读僵死信息(PID/时间)，自管 pidfile 更直观可调试。
+
+## B · 选择层（区分度 + 新鲜 + 多样）
+
+**triage 真覆盖全池**：删掉 `sorted(by weight)[:80]` 预砍 → score 全池（默认 ~130 全进），仅当 >200 时按**新鲜度**裁。**为什么**：按源权重预砍会让低权重社区源的好货在打分前就消失，违背"不漏好货"（web Claude 抓的真 bug）。
+
+**破"全 9" = retrieve-then-rerank**：triage 绝对 0–10 必然挤顶、无排序价值。改为 triage 粗筛打标签/滤垃圾 → quality_gate 裁到 finalist 池(24) → 新增 `rerank` stage 做 **listwise 相对排序**（数组顺序=名次，模型被逼出梯度）+ 每条「为何压过淘汰线」当 reason；再按名次赋 score 梯度（可证非 flat）。**为什么 listwise 不 pairwise**：pairwise N² 调用太贵；listwise 一次调用、对 ≤24 池足够且产出干净梯度。**为什么 rerank 用 sonnet**：池小、排序质量比成本重要。失败回退 triage 分数序，不丢条目。
+
+**多样性配额**：rerank 选最终 N 时每源 ≤ `max_per_source`(3)，贪心按名次填、超额 defer、不足再放宽补满。防单源（如 Anthropic 博客）刷屏。
+
+**新鲜度 + 往期补课分离**：① fetch 对无日期源 `max_undated_per_source`(8) 限流（防 back-catalog 灌爆）+ `first_seen.json` 给每条打首见戳（首见才算新，之后 seen 去重）。② synthesize 按 `published_at` 有无分「🆕 今日新增 / 📚 往期补课」两区，头部如实写计数。**为什么**：`is_fresh(None)=True` 让无日期博客索引页把整个历史当"今日"灌入；分区 + 限流 + 如实计数 = 不再把旧文当今日（web Claude 抓的真 bug）。

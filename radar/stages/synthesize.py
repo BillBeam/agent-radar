@@ -111,28 +111,37 @@ class SynthesizeStage(Stage):
             return
 
         title_kind = "每周深读" if ctx.mode == "weekly" else "今日"
+        # items arrive in rerank rank-order; split by recency (dated = today's new,
+        # undated = back-catalog catch-up) so we never pass off old posts as "today".
+        fresh = [it for it in items if it.published_at is not None]
+        backfill = [it for it in items if it.published_at is None]
+        counts = f"今日新增 {len(fresh)}" + (f" · 往期补课 {len(backfill)}" if backfill else "")
         header = (f"# Agent Radar · {date}（{weekday}）\n\n"
                   f"> 扫描 {len(ctx.sources)} 源 · 候选 {funnel.get('candidates', 0)} · "
-                  f"精选 {len(items)} · 跳过已读 {ctx.stats.get('skipped_seen', 0)}\n"
+                  f"{counts} · 跳过已读 {ctx.stats.get('skipped_seen', 0)}\n"
                   + _health_line(ctx))
 
         tldr = _tldr(ctx, items)
         tldr_block = f"\n## 🎯 {title_kind} TL;DR\n\n{tldr}\n" if tldr else ""
 
-        groups: dict[str, list[Item]] = {}
-        for it in items:
-            sec, _ = _section_of(it)
-            groups.setdefault(sec, []).append(it)
-        ordered = sorted(groups.items(), key=lambda kv: min(_section_of(i)[1] for i in kv[1]))
-
         full_parts: list[str] = []
         brief_parts: list[str] = []
-        for sec, sec_items in ordered:
-            full_parts.append(f"\n## {sec}\n")
-            brief_parts.append(f"\n## {sec}\n")
-            for it in sorted(sec_items, key=lambda x: x.score or 0, reverse=True):
+
+        def _emit(group: list[Item], heading: str | None) -> None:
+            if not group:
+                return
+            if heading:
+                full_parts.append(f"\n## {heading}\n")
+                brief_parts.append(f"\n## {heading}\n")
+            for it in group:  # preserve rerank rank-order
                 full_parts.append(_render_full(it))
                 brief_parts.append(_render_brief(it))
+
+        if backfill:  # only label when there's a contrast to draw
+            _emit(fresh, "🆕 今日新增")
+            _emit(backfill, "📚 往期补课（无发布日期，首次收录）")
+        else:
+            _emit(fresh, None)
 
         sa = sum(1 for it in items if it.self_applicable)
         deep = sum(1 for it in items if it.explain_zh and not it.explain_zh.startswith(_NO_TEXT_PREFIX))
@@ -151,4 +160,5 @@ class SynthesizeStage(Stage):
         atomic_write_json(Paths.digests / f"{date}.items.json",
                           [it.model_dump(mode="json") for it in items])
         ctx.log.info("synthesized", full_chars=len(ctx.digest.markdown),
-                     brief_chars=len(ctx.digest.markdown_brief), sections=len(groups), tldr=bool(tldr))
+                     brief_chars=len(ctx.digest.markdown_brief),
+                     fresh=len(fresh), backfill=len(backfill), tldr=bool(tldr))

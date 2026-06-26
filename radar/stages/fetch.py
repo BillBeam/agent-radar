@@ -6,6 +6,8 @@ recovered / re-run offline.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from ..core import registry
 from ..core.config import Paths
 from ..core.io import atomic_write_json, read_json
@@ -24,6 +26,9 @@ class FetchStage(Stage):
         sources = load_sources()
         ctx.sources = sources
         seen = set(read_json(Paths.seen_json, {}).keys())
+        first_seen: dict[str, str] = read_json(Paths.first_seen_json, {}) or {}
+        today = ctx.started_at.astimezone().strftime("%Y-%m-%d")
+        max_undated = ctx.config.max_undated_per_source
 
         adapters: dict[str, object] = {}
         pool: dict[str, Item] = {}
@@ -45,10 +50,18 @@ class FetchStage(Stage):
                 continue
 
             kept = 0
+            undated_kept = 0
             for it in items:
                 if it.id in seen:
                     ctx.bump("skipped_seen")
                     continue
+                if it.published_at is None:
+                    # bounded history: a dateless source (e.g. a blog index page) must
+                    # not dump its whole back-catalog as "today".
+                    if undated_kept >= max_undated:
+                        continue
+                    undated_kept += 1
+                first_seen.setdefault(it.id, today)  # remember when we first saw it
                 existing = pool.get(it.id)
                 if existing is None or it.weight > existing.weight:
                     pool[it.id] = it
@@ -58,6 +71,10 @@ class FetchStage(Stage):
         ctx.candidates = list(pool.values())
         ctx.bump("candidates", len(ctx.candidates))
         ctx.stats["per_source"] = per_source
+        # prune first_seen to ~120 days, then persist
+        cutoff = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+        first_seen = {k: v for k, v in first_seen.items() if v >= cutoff}
+        atomic_write_json(Paths.first_seen_json, first_seen)
 
         date = ctx.started_at.astimezone().strftime("%Y-%m-%d")
         atomic_write_json(

@@ -23,7 +23,7 @@ from ..obs import Logger, Tracer
 
 # canonical stage order; memory stages (recall/remember) land in P1
 DAILY_STAGES = [
-    "fetch", "triage", "quality_gate", "recall",
+    "fetch", "triage", "quality_gate", "rerank", "recall",
     "deepread", "synthesize", "deliver", "remember",
 ]
 

@@ -45,12 +45,13 @@ class ThresholdRule(QualityRule):
 
 @register("quality", "cap")
 class CapRule(QualityRule):
-    """Sort by score (weight as nudge) and cap to max_items — slow days push fewer."""
+    """Coarse-sort by score and cap to the FINALIST pool — the rerank stage then
+    does the relative ranking + diversity to pick the final max_items."""
     name = "cap"
 
     def apply(self, items: list[Item], ctx: RunContext) -> list[Item]:
         ranked = sorted(items, key=lambda it: (it.score or 0) + 0.4 * it.weight, reverse=True)
-        cap = ctx.config.max_items(ctx.mode)
+        cap = ctx.config.finalist_pool
         if len(ranked) > cap:
             ctx.bump("gate.capped", len(ranked) - cap)
         return ranked[:cap]
