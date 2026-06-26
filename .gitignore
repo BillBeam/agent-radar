@@ -1,6 +1,9 @@
 # secrets & local config
 config.toml
 *.secret
+# local-only operating manual — contains personal/career context; auto-loaded by
+# Claude Code from the working tree, never published (repo is public)
+CLAUDE.md
 
 # data / runtime artifacts (keep dir structure via .gitkeep)
 data/candidates/*
