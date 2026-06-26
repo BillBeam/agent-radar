@@ -193,6 +193,52 @@ def test_synthesize_recency_split(tmp_path, monkeypatch):
     assert "🆕 今日新增" in md and "往期补课" in md and "今日新增 1" in md
 
 
+# ---- E: canonical display order + mark feedback ----
+def test_synthesize_canonical_order(tmp_path, monkeypatch):
+    """items.json + [N] + digest.items must all follow display order (fresh→backfill),
+    even when rerank interleaves them — else `mark N` maps to the wrong item."""
+    import json
+    from datetime import datetime, timezone
+    import radar.stages.synthesize as S
+    monkeypatch.setattr(S.Paths, "digests", tmp_path)
+    ctx = _ctx()
+    ctx.llm = None
+    ctx.sources = []
+    f1 = _item(title="F1", score=9)
+    f1.published_at = datetime.now(timezone.utc)
+    b1 = _item(title="B1", score=8)
+    b1.published_at = None
+    f2 = _item(title="F2", score=7)
+    f2.published_at = datetime.now(timezone.utc)
+    ctx.items = [f1, b1, f2]  # rerank interleaves fresh/backfill
+    S.SynthesizeStage().run(ctx)
+    persisted = json.loads((tmp_path / f"{ctx.digest.date}.items.json").read_text(encoding="utf-8"))
+    assert [p["title"] for p in persisted] == ["F1", "F2", "B1"]          # display order
+    assert [it.title for it in ctx.digest.items] == ["F1", "F2", "B1"]
+    assert "[1] [F1]" in ctx.digest.markdown_brief
+    assert "[3] [B1]" in ctx.digest.markdown_brief
+
+
+def test_mark_maps_and_snapshots(tmp_path, monkeypatch):
+    import json
+    from radar.core import config as Cfg
+    from radar.core.io import atomic_write_json
+    from radar.cli import cmd_mark
+    monkeypatch.setattr(Cfg.Paths, "digests", tmp_path)
+    monkeypatch.setattr(Cfg.Paths, "feedback", tmp_path)
+    atomic_write_json(tmp_path / "2026-06-26.items.json", [
+        {"id": "aaa", "title": "First", "source_name": "S1", "tags": ["x"], "url": "http://a"},
+        {"id": "bbb", "title": "Second", "source_name": "S2", "tags": ["y"], "url": "http://b"},
+    ])
+    assert cmd_mark(["2026-06-26", "2", "--up"]) == 0
+    fb = json.loads((tmp_path / "2026-06-26.json").read_text(encoding="utf-8"))
+    assert "bbb" in fb and "aaa" not in fb                     # #2 → second item (id bbb)
+    assert fb["bbb"]["vote"] == "up" and fb["bbb"]["title"] == "Second"
+    assert fb["bbb"]["source"] == "S2" and fb["bbb"]["url"] == "http://b"   # content snapshot
+    assert cmd_mark(["2026-06-26", "99"]) == 1                 # out of range, no crash
+    assert cmd_mark(["2099-01-01", "1"]) == 1                  # missing date file, graceful
+
+
 # ---- C: salvage / lock / health / last_run ----
 def test_salvage_objects():
     from radar.llm._json import salvage_objects

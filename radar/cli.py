@@ -139,6 +139,55 @@ def cmd_status() -> int:
     return 0
 
 
+def cmd_mark(argv: list[str]) -> int:
+    """`radar mark <date> <N...> [--up/--down]` — thumbs up/down digest items.
+    Numbers are the [N] shown in the digest; they map to {date}.items.json (persisted
+    in the same display order). Feedback snapshots item content (title/source/tags/url)
+    so P2 personalization is self-contained. Default vote = up."""
+    from datetime import datetime
+
+    from .core.config import Paths
+    from .core.io import atomic_write_json, read_json
+
+    p = argparse.ArgumentParser(prog="radar mark",
+                                description="thumbs up/down digest items (feeds P2 personalization)")
+    p.add_argument("date", help="digest date YYYY-MM-DD")
+    p.add_argument("numbers", nargs="+", type=int, help="item number(s) [N] from the digest")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--up", action="store_true", help="thumbs up (default)")
+    g.add_argument("--down", action="store_true", help="thumbs down")
+    a = p.parse_args(argv)
+    vote = "down" if a.down else "up"
+
+    items = read_json(Paths.digests / f"{a.date}.items.json")
+    if not items:
+        print(f"no digest items for {a.date} — did it run that day? "
+              f"(looked for data/digests/{a.date}.items.json)")
+        return 1
+
+    feedback = read_json(Paths.feedback / f"{a.date}.json", {})
+    if not isinstance(feedback, dict):
+        feedback = {}
+    ts = datetime.now().astimezone().isoformat(timespec="seconds")
+    marked = 0
+    for num in a.numbers:
+        if not (1 <= num <= len(items)):
+            print(f"  ⚠ #{num} out of range (1..{len(items)}) — skipped")
+            continue
+        it = items[num - 1]
+        feedback[it["id"]] = {  # last-write-wins on repeat
+            "vote": vote, "ts": ts,
+            "title": it.get("title"), "source": it.get("source_name"),
+            "tags": it.get("tags", []), "url": it.get("url"),
+        }
+        print(f"  {'👍' if vote == 'up' else '👎'} [{num}] {(it.get('title') or '')[:56]}")
+        marked += 1
+    if marked:
+        atomic_write_json(Paths.feedback / f"{a.date}.json", feedback)
+        print(f"saved {marked} vote(s) → data/feedback/{a.date}.json")
+    return 0 if marked else 1
+
+
 def cmd_validate() -> int:
     try:
         validate = import_module("radar.sources").validate_sources
@@ -163,6 +212,10 @@ def cmd_stub(mode: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    if raw and raw[0] == "mark":  # subcommand: radar mark <date> <N...> [--up/--down]
+        return cmd_mark(raw[1:])
+
     p = argparse.ArgumentParser(prog="radar", description="agent-radar")
     p.add_argument("--mode", default="daily", choices=MODES)
     p.add_argument("--dry-run", action="store_true", help="fetch+triage but don't deliver")

@@ -63,21 +63,24 @@ def _essence(it: Item, limit: int = 120) -> str:
     return it.reason or ""
 
 
-def _render_full(it: Item) -> str:
+def _render_full(it: Item, num: int | None = None) -> str:
     """Local archive: rich 详解. ### item header (only heading per item — the
     inlined explanation uses bold lines, defensively demoted)."""
+    prefix = f"[{num}] " if num else ""
     tags = ("　" + " · ".join(it.tags[:4])) if it.tags else ""
     body = (demote_headings(it.explain_zh)
             if (it.explain_zh and not it.explain_zh.startswith(_NO_TEXT_PREFIX))
             else (it.explain_zh or it.reason or ""))
-    return f"### [{_title(it)}]({it.url})\n*{it.source_name}*{tags}\n\n{body}\n"
+    return f"### {prefix}[{_title(it)}]({it.url})\n*{it.source_name}*{tags}\n\n{body}\n"
 
 
-def _render_brief(it: Item) -> str:
+def _render_brief(it: Item, num: int | None = None) -> str:
     """DingTalk-safe scannable card: clean title link + one-line why + plain source
-    tail + divider. No backticks (DingTalk doesn't render inline code), no score, no ★."""
+    tail + divider. No backticks (DingTalk doesn't render inline code), no score, no ★.
+    A small [N] prefix lets you `radar mark <date> N` to thumbs-up/down."""
+    prefix = f"[{num}] " if num else ""
     why = (it.reason or _essence(it)).strip()
-    return (f"**[{_title(it)}]({it.url})**\n"
+    return (f"**{prefix}[{_title(it)}]({it.url})**\n"
             f"{why}\n"
             f"*— {it.source_name}*\n\n---\n")
 
@@ -123,13 +126,18 @@ class SynthesizeStage(Stage):
         # undated = back-catalog catch-up) so we never pass off old posts as "today".
         fresh = [it for it in items if it.published_at is not None]
         backfill = [it for it in items if it.published_at is None]
+        # CANONICAL display order = fresh→backfill (each in rank order). This single
+        # order drives the [N] numbers, items.json persistence AND `radar mark` — so the
+        # number you see in DingTalk always maps to the right item.id (no silent mismatch).
+        ordered = fresh + backfill
+        number_of = {id(it): n for n, it in enumerate(ordered, 1)}
         counts = f"今日新增 {len(fresh)}" + (f" · 往期补课 {len(backfill)}" if backfill else "")
         header = (f"# Agent Radar · {date}（{weekday}）\n\n"
                   f"> 扫描 {len(ctx.sources)} 源 · 候选 {funnel.get('candidates', 0)} · "
                   f"{counts} · 跳过已读 {ctx.stats.get('skipped_seen', 0)}\n"
                   + _health_line(ctx))
 
-        tldr = _tldr(ctx, items)
+        tldr = _tldr(ctx, ordered)
         tldr_block = f"\n## 🎯 {title_kind} TL;DR\n\n{tldr}\n" if tldr else ""
 
         full_parts: list[str] = []
@@ -141,9 +149,10 @@ class SynthesizeStage(Stage):
             if heading:
                 full_parts.append(f"\n## {heading}\n")
                 brief_parts.append(f"\n## {heading}\n")
-            for it in group:  # preserve rerank rank-order
-                full_parts.append(_render_full(it))
-                brief_parts.append(_render_brief(it))
+            for it in group:  # rank order within group; numbering follows display order
+                num = number_of[id(it)]
+                full_parts.append(_render_full(it, num))
+                brief_parts.append(_render_brief(it, num))
 
         if backfill:  # only label when there's a contrast to draw
             _emit(fresh, "🆕 今日新增")
@@ -160,13 +169,14 @@ class SynthesizeStage(Stage):
                         f"想深挖哪篇，开 /agent-radar 跟我聊。\n")
 
         ctx.digest = Digest(
-            kind=ctx.mode, date=date, items=items, stats=ctx.stats,
+            kind=ctx.mode, date=date, items=ordered, stats=ctx.stats,
             markdown=header + tldr_block + "".join(full_parts) + full_footer,
             markdown_brief=header + tldr_block + "".join(brief_parts) + brief_footer,
         )
-        # persist final items (with 详解) so briefs/eval can re-render without re-running
+        # persist in CANONICAL display order so {date}.items.json[N-1] == digest item [N]
+        # == `radar mark <date> N`. This alignment is the whole point of the order above.
         atomic_write_json(Paths.digests / f"{date}.items.json",
-                          [it.model_dump(mode="json") for it in items])
+                          [it.model_dump(mode="json") for it in ordered])
         ctx.log.info("synthesized", full_chars=len(ctx.digest.markdown),
                      brief_chars=len(ctx.digest.markdown_brief),
                      fresh=len(fresh), backfill=len(backfill), tldr=bool(tldr))

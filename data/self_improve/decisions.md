@@ -46,3 +46,11 @@
 **详解层级**：`deepread.md` 明令小标题用加粗行不用 `#/##/###`；synthesize `demote_headings` 防御性把残留 `#` 转粗体——条目 `###` 是每条唯一标题，不再打架。
 
 **智能截断**：`core/text.smart_truncate` 英文回退到词边界、CJK 原子字符硬截不过删；标题/essence 共用。
+
+## E · 反馈种子（P2 用）
+
+**规范显示序（web Claude 抓的真正确性漏洞）**：`[N]` 编号、`items.json` 持久化、`mark` 映射必须同一个"你从上往下读的顺序"。原 items.json 按 rerank 序写，但 digest 按 fresh→backfill 显示——两序不一定一致（今天碰巧一致只因 fresh 分都高过 backfill），哪天一篇 backfill 排进 fresh 中间，`mark N` 就**静默标错条目**。修法：synthesize 定 `ordered = fresh + backfill` 为唯一规范序，`number_of` 从它生成 `[N]`，`items.json` 和 `digest.items` 都按它持久化。三者永远对齐。
+
+**feedback 存内容快照**（web Claude 建议）：不只 `{id:{vote,ts}}`，存 `{id:{vote,ts,title,source,tags,url}}`。**为什么**：P2 要从 👍/👎 学口味，需要条目内容；光存 id 要回头 join 一堆每日 items.json，又脆又烦。快照让 P2 自包含、不怕 items.json 被清/挪。
+
+**mark 子命令 + 健壮**：`radar mark <date> <N...> [--up/--down]`（argparse 子命令，默认 --up）。编号越界跳过给提示、items.json 不存在不崩、重复 mark 后写覆盖。`[N]` 前缀克制（标题前一个小号，不破坏 A 的干净卡片）。**不改 models.py**：编号来自持久化顺序、不入 Item。
