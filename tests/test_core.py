@@ -98,12 +98,53 @@ def test_dingtalk_chunk_cjk_hard_split():
     assert all(_bytes(p) <= 9000 for p in parts)
 
 
-# ---- html title cleanup ----
+# ---- A: presentation (titles / truncation / dingtalk-safe / headings) ----
+def test_smart_truncate():
+    from radar.core.text import smart_truncate
+    assert smart_truncate("short", 80) == "short"
+    assert smart_truncate("hello world foobar", 13) == "hello world…"   # English word boundary
+    assert smart_truncate("一二三四五六七八九十", 5) == "一二三四五…"      # CJK hard cut, no over-trim
+
+
+def test_strip_trailing_date():
+    from radar.core.text import strip_trailing_date
+    assert strip_trailing_date("How we contain Claude Apr 08, 2026") == "How we contain Claude"
+    assert strip_trailing_date("Effective harnesses Nov 26 2025") == "Effective harnesses"
+    assert strip_trailing_date("Some post 2026-06-21") == "Some post"
+    assert strip_trailing_date("No date here") == "No date here"
+
+
+def test_demote_headings():
+    from radar.core.text import demote_headings
+    assert demote_headings("## 背景\n正文\n### 机制\nx") == "**背景**\n正文\n**机制**\nx"
+
+
+def test_link_extractor_prefers_heading():
+    from radar.sources.html import _LinkExtractor
+    p = _LinkExtractor()
+    p.feed('<a href="/x"><h3>Real Title</h3><p>some blurb that should not mash in</p></a>')
+    assert p.links == [("/x", "Real Title")]
+    p2 = _LinkExtractor()
+    p2.feed('<a href="/y">Just Anchor Text</a>')
+    assert p2.links == [("/y", "Just Anchor Text")]
+
+
 def test_clean_title():
     from radar.sources.html import _clean_title
-    assert _clean_title("Featured How we contain Claude") == "How we contain Claude"
-    long = "word " * 40
-    assert _clean_title(long).endswith("…")
+    assert _clean_title("Featured Some Title") == "Some Title"
+    assert _clean_title("How we contain Claude Apr 08, 2026") == "How we contain Claude"
+
+
+def test_render_brief_dingtalk_safe():
+    from radar.stages.synthesize import _render_brief
+    it = _item(title="My Title", score=9)
+    it.reason = "为何值得看：具体洞见"
+    it.self_applicable = True
+    it.target_component = "x"
+    it.tags = ["a", "b"]
+    b = _render_brief(it)
+    assert "`" not in b and "★" not in b and "相关度" not in b   # no noise/backticks
+    assert "为何值得看" in b and "[My Title](" in b and "---" in b
 
 
 # ---- B: full-pool triage / rerank diversity / recency split ----

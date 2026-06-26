@@ -15,29 +15,38 @@ from urllib.parse import urljoin
 
 from ..core.models import Item, Source, TimeWindow
 from ..core.registry import register
+from ..core.text import smart_truncate, strip_trailing_date
 from ._base import BaseSource
 
 _TITLE_PREFIXES = ("Featured ", "New ", "Announcement ", "Read more ")
 
 
 def _clean_title(text: str, max_len: int = 80) -> str:
-    """Cards often mash heading+blurb in one <a>. Strip noise prefixes and cap at
-    a word boundary so titles read cleanly in the digest / DingTalk."""
-    text = text.strip()
+    """Best-effort: strip noise prefixes + trailing dates, cap at a word boundary.
+    (A card that mashes title+blurb with no inner heading may still leak some blurb —
+    that's a known limitation, surfaced in the run report rather than hidden.)"""
+    text = strip_trailing_date(text.strip())
     for pre in _TITLE_PREFIXES:
         if text.startswith(pre):
-            text = text[len(pre):]
-    if len(text) > max_len:
-        text = text[: max_len - 1].rsplit(" ", 1)[0] + "…"
-    return text
+            text = strip_trailing_date(text[len(pre):])
+            break
+    return smart_truncate(text, max_len)
 
 
 class _LinkExtractor(HTMLParser):
+    """Collect (href, title) per <a>. Prefer the anchor's inner heading (h1–h4)
+    text as the title — cards put the real title in a heading and the blurb in a
+    <p>, so taking the heading avoids mashing them together."""
+
+    _HEADINGS = {"h1", "h2", "h3", "h4"}
+
     def __init__(self) -> None:
         super().__init__()
         self.links: list[tuple[str, str]] = []
         self._href: str | None = None
         self._text: list[str] = []
+        self._heading: list[str] = []
+        self._in_heading = 0
 
     def handle_starttag(self, tag, attrs):
         if tag == "a":
@@ -45,17 +54,28 @@ class _LinkExtractor(HTMLParser):
             if href:
                 self._href = href
                 self._text = []
+                self._heading = []
+                self._in_heading = 0
+        elif tag in self._HEADINGS and self._href is not None:
+            self._in_heading += 1
 
     def handle_data(self, data):
         if self._href is not None:
             self._text.append(data)
+            if self._in_heading > 0:
+                self._heading.append(data)
 
     def handle_endtag(self, tag):
+        if tag in self._HEADINGS and self._href is not None and self._in_heading > 0:
+            self._in_heading -= 1
         if tag == "a" and self._href is not None:
-            text = " ".join(" ".join(self._text).split())
-            self.links.append((self._href, text))
+            heading = " ".join(" ".join(self._heading).split())
+            anchor = " ".join(" ".join(self._text).split())
+            self.links.append((self._href, heading or anchor))
             self._href = None
             self._text = []
+            self._heading = []
+            self._in_heading = 0
 
 
 @register("source", "html")

@@ -34,3 +34,15 @@
 **多样性配额**：rerank 选最终 N 时每源 ≤ `max_per_source`(3)，贪心按名次填、超额 defer、不足再放宽补满。防单源（如 Anthropic 博客）刷屏。
 
 **新鲜度 + 往期补课分离**：① fetch 对无日期源 `max_undated_per_source`(8) 限流（防 back-catalog 灌爆）+ `first_seen.json` 给每条打首见戳（首见才算新，之后 seen 去重）。② synthesize 按 `published_at` 有无分「🆕 今日新增 / 📚 往期补课」两区，头部如实写计数。**为什么**：`is_fresh(None)=True` 让无日期博客索引页把整个历史当"今日"灌入；分区 + 限流 + 如实计数 = 不再把旧文当今日（web Claude 抓的真 bug）。
+
+**多样性配额"够不到 N 则放宽"**：`_select_diverse` 贪心按名次填，每源超 `max_per_source` 则 defer；若过完一遍仍 < max_items，再从 defer 补满。**取舍**：够 N 优先 vs 严格配额。选前者——论文经 HF/arXiv 聚合器进来"源"粒度偏粗，真要防的是单个博客刷屏；真跑实测（2026-06-26）finalist 仅 ~3 个不同源，严格配额只能出 9 条，放宽补到 10（第 4 条 Anthropic 排最末 rank 10）。要改严格是 `_select_diverse` 去掉 defer 补满那段、一行的事。
+
+## A · 呈现层（修丑）
+
+**标题清洗**：`_LinkExtractor` 优先取 `<a>` 内 h1–h4 文本（卡片真标题在 heading、blurb 在 `<p>`，取 heading 避免 mash）；`_clean_title` 去尾日期 + 智能截断。**已知局限**：「混了摘要又无内层 heading」的源可能仍残留——真跑自检暴露而非默认全干净（2026-06-26 实测 10 条标题全干净）。
+
+**钉钉去反引号**：DingTalk markdown 不渲染 `` `inline code` ``/代码块，原 brief 用 `` `source` ``/`` `tag` `` 是脏的元凶。改 brief 卡片 = `**标题(链接)**` + 一行 why(rerank reason) + `*— 来源*` + `---` 分隔；删「相关度 N」「★」hashtag。`★可改进本系统` 两版都删（几乎每条都亮=噪音），self_applicable 仍存 items.json 供 P4。
+
+**详解层级**：`deepread.md` 明令小标题用加粗行不用 `#/##/###`；synthesize `demote_headings` 防御性把残留 `#` 转粗体——条目 `###` 是每条唯一标题，不再打架。
+
+**智能截断**：`core/text.smart_truncate` 英文回退到词边界、CJK 原子字符硬截不过删；标题/essence 共用。

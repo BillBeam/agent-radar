@@ -15,6 +15,7 @@ from ..core.io import atomic_write_json
 from ..core.models import Digest, Item, RunContext
 from ..core.ports import Stage
 from ..core.registry import register
+from ..core.text import demote_headings, smart_truncate, strip_trailing_date
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -47,31 +48,38 @@ def _tldr(ctx: RunContext, items: list[Item]) -> str:
     return res.text.strip() if res.ok else ""
 
 
-def _essence(it: Item, limit: int = 130) -> str:
-    """One-line gist for the brief — first real paragraph of the 详解, else triage reason."""
+def _title(it: Item) -> str:
+    return strip_trailing_date(it.title)
+
+
+def _essence(it: Item, limit: int = 120) -> str:
+    """Fallback one-liner — first real paragraph of the 详解, cleaned + truncated."""
     src = it.explain_zh
     if src and not src.startswith(_NO_TEXT_PREFIX):
         for para in src.split("\n\n"):
             p = para.strip()
             if p and not p.lstrip().startswith("#"):
-                p = re.sub(r"[*`#>]", "", p).strip()
-                return p[:limit] + ("…" if len(p) > limit else "")
+                return smart_truncate(re.sub(r"[*`#>]", "", p).strip(), limit)
     return it.reason or ""
 
 
 def _render_full(it: Item) -> str:
-    badge = f" · ★可改进本系统（{it.target_component}）" if it.self_applicable else ""
-    tags = ("　`" + "` `".join(it.tags) + "`") if it.tags else ""
-    head = f"### [{it.title}]({it.url})\n`{it.source_name}` · 相关度 {it.score:.0f}{badge}{tags}\n"
-    return head + "\n" + (it.explain_zh or it.reason or "") + "\n"
+    """Local archive: rich 详解. ### item header (only heading per item — the
+    inlined explanation uses bold lines, defensively demoted)."""
+    tags = ("　" + " · ".join(it.tags[:4])) if it.tags else ""
+    body = (demote_headings(it.explain_zh)
+            if (it.explain_zh and not it.explain_zh.startswith(_NO_TEXT_PREFIX))
+            else (it.explain_zh or it.reason or ""))
+    return f"### [{_title(it)}]({it.url})\n*{it.source_name}*{tags}\n\n{body}\n"
 
 
 def _render_brief(it: Item) -> str:
-    badge = " ★可改进本系统" if it.self_applicable else ""
-    tags = ("　" + " ".join(f"#{t}" for t in it.tags[:3])) if it.tags else ""
-    return (f"**[{it.title}]({it.url})**\n"
-            f"`{it.source_name}` · 相关度 {it.score:.0f}{badge}{tags}\n"
-            f"{_essence(it)}\n")
+    """DingTalk-safe scannable card: clean title link + one-line why + plain source
+    tail + divider. No backticks (DingTalk doesn't render inline code), no score, no ★."""
+    why = (it.reason or _essence(it)).strip()
+    return (f"**[{_title(it)}]({it.url})**\n"
+            f"{why}\n"
+            f"*— {it.source_name}*\n\n---\n")
 
 
 def _health_line(ctx: RunContext) -> str:
@@ -148,8 +156,8 @@ class SynthesizeStage(Stage):
         full_footer = (f"\n---\n*把关漏斗：候选 {funnel.get('candidates', 0)} → 过门 {len(items)}"
                        f"（淘汰低于阈值 {funnel.get('below_threshold', 0)}、噪声 {funnel.get('blocked', 0)}）"
                        f" · 自相关 {sa} 条 · run `{ctx.run_id}`*\n")
-        brief_footer = (f"\n---\n📄 完整逐篇中文详解（{deep} 篇深读）已存本地归档。"
-                        f"想深挖哪篇，开 `/agent-radar` 跟我聊。\n")
+        brief_footer = (f"\n📄 完整逐篇中文详解（{deep} 篇深读）已存本地归档。"
+                        f"想深挖哪篇，开 /agent-radar 跟我聊。\n")
 
         ctx.digest = Digest(
             kind=ctx.mode, date=date, items=items, stats=ctx.stats,
