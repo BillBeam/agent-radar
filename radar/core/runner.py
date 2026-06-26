@@ -15,7 +15,9 @@ from typing import Optional
 
 from . import registry
 from .config import Paths, RadarConfig, load_config
-from .models import RunContext, TimeWindow
+from .io import atomic_write_json
+from .lock import RunLock
+from .models import RunContext, TimeWindow, utcnow
 from .pipeline import Pipeline
 from ..obs import Logger, Tracer
 
@@ -72,9 +74,46 @@ def make_context(mode: str, config: RadarConfig) -> RunContext:
     return ctx
 
 
+def _write_last_run(ctx: RunContext) -> None:
+    """Persist a run summary so `radar status` can tell what happened / if it broke."""
+    fh = ctx.stats.get("fetch_health", {}) or {}
+    selected = len(ctx.digest.items) if ctx.digest else len(ctx.items)
+    usage = dict(getattr(ctx.llm, "usage_total", {})) if ctx.llm else {}
+    summary = {
+        "run_id": ctx.run_id,
+        "mode": ctx.mode,
+        "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "duration_s": round((utcnow() - ctx.started_at).total_seconds(), 1),
+        "sources": {"live": fh.get("live"), "total": fh.get("total"),
+                    "failed": fh.get("failed", [])},
+        "candidates": ctx.stats.get("candidates", 0),
+        "selected": selected,
+        "deepread_ok": ctx.stats.get("deepread.ok", 0),
+        "triage_coverage": ctx.stats.get("triage_coverage"),
+        "triage_degraded": ctx.stats.get("triage_degraded", False),
+        "tokens": usage,
+        "delivered": ctx.stats.get("delivered", {}),
+        "errors": ctx.errors[:5],
+    }
+    try:
+        atomic_write_json(Paths.state / "last_run.json", summary)
+    except Exception as e:  # noqa: BLE001 — never let bookkeeping break a run
+        ctx.log.warn("failed to write last_run.json", error=repr(e))
+
+
 def run_mode(mode: str, config: Optional[RadarConfig] = None) -> RunContext:
     config = config or load_config()
     ctx = make_context(mode, config)
+
+    lock = RunLock(Paths.state / "run.lock")
+    if not lock.acquire():
+        ctx.log.error("another run holds the lock — aborting",
+                      held=getattr(lock, "held_by", {}))
+        ctx.errors.append("run-lock held by another live process")
+        ctx.trace.close()
+        ctx.log.close()
+        return ctx
+
     ctx.log.info("run start", mode=mode, window_h=ctx.window.hours)
     if os.environ.get("ANTHROPIC_API_KEY"):
         ctx.log.warn("ANTHROPIC_API_KEY is set — claude -p will bill the API, "
@@ -82,7 +121,16 @@ def run_mode(mode: str, config: Optional[RadarConfig] = None) -> RunContext:
     try:
         build_pipeline(mode, ctx).run(ctx)
     finally:
-        ctx.log.info("run done", stats=ctx.stats, errors=len(ctx.errors))
+        _write_last_run(ctx)
+        tok = getattr(ctx.llm, "usage_total", {}) if ctx.llm else {}
+        ctx.log.info("run done", errors=len(ctx.errors),
+                     tokens_in=tok.get("input"), tokens_out=tok.get("output"),
+                     llm_calls=tok.get("calls"))
+        if config.token_budget_per_run and tok.get("output", 0) and \
+                (tok.get("input", 0) + tok.get("output", 0)) > config.token_budget_per_run:
+            ctx.log.warn("token budget exceeded (soft)", budget=config.token_budget_per_run,
+                         used=tok.get("input", 0) + tok.get("output", 0))
+        lock.release()
         ctx.trace.close()
         ctx.log.close()
     return ctx

@@ -65,6 +65,15 @@ class FetchStage(Stage):
             [it.model_dump(mode="json") for it in ctx.candidates],
         )
         live = sum(1 for v in per_source.values() if v >= 0)
+        failed = [sid for sid, v in per_source.items() if v < 0]
+        ctx.stats["fetch_health"] = {"live": live, "total": len(sources), "failed": failed}
+        if sources and live == 0:
+            # all sources down ≠ "no news" — surface it loudly, don't go quietly empty
+            ctx.errors.append(f"ALL {len(sources)} sources failed to fetch "
+                              f"— network/proxy likely down")
+            ctx.log.error("ALL sources failed", total=len(sources))
+        elif failed:
+            ctx.log.warn("some sources failed", live=live, total=len(sources), failed=failed[:8])
         ctx.log.info("fetched", candidates=len(ctx.candidates),
                      sources_live=live, sources_total=len(sources),
                      skipped_seen=ctx.stats.get("skipped_seen", 0))

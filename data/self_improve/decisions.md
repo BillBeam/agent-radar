@@ -14,3 +14,13 @@
 - 显式 config 代理优先于环境变量：方便在某些环境覆盖（如环境变量里是不可达的公司代理时，用 config 指定一个可用的）。
 
 **落点**：`config.proxy_settings() -> (proxies, trust_env)`；`sources/_base.py` 与 `stages/_article.py` 统一走它；`doctor` 经解析后的代理实测 openai/hf/github/arxiv 可达性+延迟，全失败/无代理大声告警。实测：env 代理被正确启用，4 源经代理全部可达。
+
+## C · 可信层（静默 bug）
+
+**triage 部分失败的处理**：① 整数组 JSON 解析失败 → **逐元素 salvage**（正则抽 flat `{…}` 各自 parse），能用多少用多少，而不是整批降级。② 未被模型覆盖的 index **不再静默记 0**（会被阈值默默丢掉、digest 悄悄缩水），改为走**单条权重启发式**并标「未被分诊覆盖」+ 记 `triage_coverage`，<0.8 告警。**为什么**：原行为下"模型只返回 3/6 条"会让 digest 从 6 条无声缩到 3 条，用户无从察觉。
+
+**全源失败 ≠ 安静空 digest**：fetch 计算 `fetch_health{live,total,failed}`，全挂则 `ctx.errors` + error 日志；synthesize 顶部健康行「今天 X/Y 源成功，失败：…」，空 digest 区分「真没料(明天见)」vs「抓取大面积失败(检查代理)」。**为什么**：原来全网断了也输出"明天见"、errors=0，用户以为没料其实是坏了。
+
+**last_run.json**：runner finally 落 run 摘要（源健康/候选/精选/深读/triage 覆盖率/降级/**token 用量**/错误），`status` 读它。token 预算暂软提示（超限 warn）。
+
+**run-lock**：`core/lock.py`，`data/state/run.lock`(PID+时间戳)，活进程持有则中止、僵死锁(进程死/超 1h)自动夺回。**为什么**：deliver 后才写 seen，两个并发跑会双投递 + 抢 state。**为什么不**用 OS 文件锁(flock)：跨平台 + 要可读僵死信息(PID/时间)，自管 pidfile 更直观可调试。

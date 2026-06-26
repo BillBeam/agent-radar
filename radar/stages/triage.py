@@ -15,6 +15,7 @@ from ..core.config import Paths
 from ..core.models import Item, RunContext
 from ..core.ports import Stage
 from ..core.registry import register
+from ..llm._json import salvage_objects
 
 
 def _recency_key(it: Item) -> float:
@@ -58,16 +59,26 @@ class TriageStage(Stage):
         )
 
         data, res = ctx.llm.complete_json(user, system=system, model=ctx.config.models.triage)
-        if not res.ok or not isinstance(data, list):
-            self._fallback(pool, ctx, res.error or "bad triage output")
-            return
+        if not isinstance(data, list) or not data:
+            # one bad element shouldn't nuke the batch — salvage flat objects
+            salvaged = salvage_objects(res.text) if res.text else []
+            if salvaged:
+                data = salvaged
+                ctx.log.warn("triage json malformed — salvaged objects", got=len(salvaged))
+            else:
+                self._fallback(pool, ctx, res.error or "bad triage output")
+                return
 
         by_index = {int(r["i"]): r for r in data if isinstance(r, dict) and "i" in r}
         scored = 0
+        unscored = 0
         for i, it in enumerate(pool):
             r = by_index.get(i)
             if not r:
-                it.score = 0.0
+                # NOT a silent 0: uncovered items go through the heuristic + a marker
+                it.score = self._heuristic_score(it)
+                it.reason = "（未被分诊覆盖 · 启发式兜底）"
+                unscored += 1
                 continue
             it.score = float(r.get("score", 0))
             it.reason = r.get("reason")
@@ -79,16 +90,27 @@ class TriageStage(Stage):
             scored += 1
 
         ctx.items = pool
+        coverage = scored / len(pool) if pool else 1.0
+        ctx.stats["triage_coverage"] = round(coverage, 2)
+        ctx.stats["triage_unscored"] = unscored
         ctx.bump("triaged", scored)
+        if coverage < 0.8:
+            ctx.log.warn("triage low coverage — heuristic-filled the rest",
+                         coverage=round(coverage, 2), unscored=unscored, pool=len(pool))
         sa = sum(1 for it in pool if it.self_applicable)
-        ctx.log.info("triage", pool=len(pool), scored=scored, self_applicable=sa,
-                     model=ctx.config.models.triage)
+        ctx.log.info("triage", pool=len(pool), scored=scored, unscored=unscored,
+                     self_applicable=sa, model=ctx.config.models.triage)
+
+    @staticmethod
+    def _heuristic_score(it: Item) -> float:
+        return round(6.0 * it.weight, 1)  # weight 1.0→6.0, 1.4→8.4, 0.9→5.4
 
     def _fallback(self, pool: list[Item], ctx: RunContext, why: str) -> None:
-        """Weight-based heuristic so the run still yields high-signal items."""
+        """Whole-batch heuristic so the run still yields high-signal items."""
         for it in pool:
-            it.score = round(6.0 * it.weight, 1)  # weight 1.0→6.0, 1.4→8.4, 0.9→5.4
+            it.score = self._heuristic_score(it)
             it.reason = "（降级：未经 LLM 分诊）"
         ctx.items = pool
         ctx.stats["triage_degraded"] = True
+        ctx.stats["triage_coverage"] = 0.0
         ctx.log.warn("triage degraded → weight heuristic", reason=why, pool=len(pool))

@@ -102,6 +102,56 @@ def test_clean_title():
     assert _clean_title(long).endswith("…")
 
 
+# ---- C: salvage / lock / health / last_run ----
+def test_salvage_objects():
+    from radar.llm._json import salvage_objects
+    bad = '[{"i":0,"score":9}, GARBAGE!!, {"i":2,"score":3}]'
+    got = salvage_objects(bad)
+    assert [o["i"] for o in got] == [0, 2]
+
+
+def test_run_lock(tmp_path):
+    from radar.core.lock import RunLock
+    p = tmp_path / "run.lock"
+    a = RunLock(p)
+    assert a.acquire() is True
+    assert RunLock(p).acquire() is False     # held by a live process (us)
+    a.release()
+    c = RunLock(p)
+    assert c.acquire() is True               # released → free
+    c.release()
+
+
+def test_run_lock_reclaims_stale(tmp_path):
+    from radar.core.io import atomic_write_json
+    from radar.core.lock import RunLock
+    p = tmp_path / "run.lock"
+    atomic_write_json(p, {"pid": 999999, "ts": "2000-01-01T00:00:00+00:00"})  # dead + old
+    assert RunLock(p).acquire() is True       # stale → reclaimed
+
+
+def test_health_line():
+    from radar.stages.synthesize import _health_line
+    ctx = _ctx()
+    ctx.stats["fetch_health"] = {"live": 0, "total": 28, "failed": ["a", "b"]}
+    assert "大面积失败" in _health_line(ctx)
+    ctx.stats["fetch_health"] = {"live": 26, "total": 28, "failed": ["a", "b"]}
+    assert "26/28" in _health_line(ctx)
+    ctx.stats["fetch_health"] = {"live": 28, "total": 28, "failed": []}
+    assert _health_line(ctx) == ""
+
+
+def test_write_last_run(tmp_path, monkeypatch):
+    import radar.core.runner as R
+    monkeypatch.setattr(R.Paths, "state", tmp_path)
+    ctx = _ctx()
+    ctx.stats.update(candidates=10, fetch_health={"live": 5, "total": 6, "failed": ["x"]})
+    R._write_last_run(ctx)
+    import json
+    d = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
+    assert d["candidates"] == 10 and d["sources"]["live"] == 5 and d["sources"]["total"] == 6
+
+
 # ---- proxy resolution (D) ----
 def test_proxy_settings():
     from radar.core.config import RadarConfig

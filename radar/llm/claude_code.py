@@ -30,6 +30,19 @@ class ClaudeCodeLLM(LLMClient):
         self.config = config
         self.log = log
         self.bin = shutil.which("claude") or "claude"
+        # cumulative token usage across the run (read by runner for last_run.json)
+        self.usage_total = {"calls": 0, "input": 0, "output": 0,
+                            "cache_read": 0, "cache_creation": 0}
+
+    def _accumulate(self, usage: Optional[dict]) -> None:
+        if not usage:
+            return
+        u = self.usage_total
+        u["calls"] += 1
+        u["input"] += usage.get("input_tokens", 0) or 0
+        u["output"] += usage.get("output_tokens", 0) or 0
+        u["cache_read"] += usage.get("cache_read_input_tokens", 0) or 0
+        u["cache_creation"] += usage.get("cache_creation_input_tokens", 0) or 0
 
     def _run(self, prompt: str, system: Optional[str], model: str,
              timeout: float) -> tuple[bool, str, dict | None]:
@@ -79,6 +92,7 @@ class ClaudeCodeLLM(LLMClient):
 
             if ok:
                 usage = (data or {}).get("usage")
+                self._accumulate(usage)
                 return LLMResult(text=text, raw=data, usage=usage, model=model, ok=True)
 
             last_err = text

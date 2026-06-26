@@ -74,6 +74,19 @@ def _render_brief(it: Item) -> str:
             f"{_essence(it)}\n")
 
 
+def _health_line(ctx: RunContext) -> str:
+    """A warning line for the digest header when sources failed — so the user can
+    tell 'no news today' from 'fetching broke'."""
+    fh = ctx.stats.get("fetch_health") or {}
+    live, total, failed = fh.get("live", 0), fh.get("total", 0), fh.get("failed", [])
+    if total and live == 0:
+        return f"> ⚠️ **抓取大面积失败：0/{total} 源成功** —— 不是没料，是网络/代理挂了，请跑 `radar doctor`。\n"
+    if failed:
+        more = "…" if len(failed) > 6 else ""
+        return f"> ⚠️ 今天 {live}/{total} 源成功，失败：{', '.join(failed[:6])}{more}\n"
+    return ""
+
+
 @register("stage", "synthesize")
 class SynthesizeStage(Stage):
     name = "synthesize"
@@ -86,8 +99,13 @@ class SynthesizeStage(Stage):
         funnel = ctx.stats.get("funnel", {})
 
         if not items:
-            md = (f"# Agent Radar · {date}（{weekday}）\n\n"
-                  f"> 今日扫描 {len(ctx.sources)} 源，没有命中阈值的高信号内容。宁缺毋滥，明天见。\n")
+            fh = ctx.stats.get("fetch_health") or {}
+            if fh.get("total") and fh.get("live", 0) == 0:
+                body = (f"> ⚠️ **抓取大面积失败：0/{fh['total']} 源成功** —— 不是没料，是网络/代理挂了。"
+                        f"跑 `radar doctor` 查可达性。\n")
+            else:
+                body = "> 今日扫描后没有命中阈值的高信号内容。宁缺毋滥，明天见。\n"
+            md = f"# Agent Radar · {date}（{weekday}）\n\n{body}"
             ctx.digest = Digest(kind=ctx.mode, date=date, items=[], markdown=md,
                                 markdown_brief=md, stats=ctx.stats)
             return
@@ -95,7 +113,8 @@ class SynthesizeStage(Stage):
         title_kind = "每周深读" if ctx.mode == "weekly" else "今日"
         header = (f"# Agent Radar · {date}（{weekday}）\n\n"
                   f"> 扫描 {len(ctx.sources)} 源 · 候选 {funnel.get('candidates', 0)} · "
-                  f"精选 {len(items)} · 跳过已读 {ctx.stats.get('skipped_seen', 0)}\n")
+                  f"精选 {len(items)} · 跳过已读 {ctx.stats.get('skipped_seen', 0)}\n"
+                  + _health_line(ctx))
 
         tldr = _tldr(ctx, items)
         tldr_block = f"\n## 🎯 {title_kind} TL;DR\n\n{tldr}\n" if tldr else ""

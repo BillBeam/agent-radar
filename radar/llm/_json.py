@@ -36,3 +36,21 @@ def extract_json(text: str) -> Any:
             except json.JSONDecodeError:
                 continue
     raise ValueError("no JSON found in model output")
+
+
+_OBJ_RE = re.compile(r"\{[^{}]*\}")
+
+
+def salvage_objects(text: str) -> list[dict]:
+    """Best-effort recover individual flat JSON objects from a partly-malformed
+    array — so one bad element doesn't discard the whole triage batch.
+    (Triage objects are flat: arrays use [], no nested {}.)"""
+    out: list[dict] = []
+    for m in _OBJ_RE.finditer(text or ""):
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict):
+                out.append(obj)
+        except json.JSONDecodeError:
+            continue
+    return out
