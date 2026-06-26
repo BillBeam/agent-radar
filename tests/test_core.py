@@ -100,3 +100,17 @@ def test_clean_title():
     assert _clean_title("Featured How we contain Claude") == "How we contain Claude"
     long = "word " * 40
     assert _clean_title(long).endswith("…")
+
+
+# ---- proxy resolution (D) ----
+def test_proxy_settings():
+    from radar.core.config import RadarConfig
+    # explicit proxy wins and disables env
+    proxies, trust = RadarConfig(http_proxy="http://p:1").proxy_settings()
+    assert proxies == {"http": "http://p:1", "https": "http://p:1"} and trust is False
+    # default: no explicit proxy → honor env proxies (trust_env True)
+    proxies, trust = RadarConfig().proxy_settings()
+    assert proxies is None and trust is True
+    # env disabled → force direct
+    proxies, trust = RadarConfig(use_env_proxy=False).proxy_settings()
+    assert proxies is None and trust is False

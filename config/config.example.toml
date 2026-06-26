@@ -9,7 +9,15 @@ weekly_freshness_hours = 192.0  # weekly: ~8 days
 relevance_threshold = 6.0       # triage score below this is dropped (宁缺毋滥)
 deepread_top_k = 6              # how many top items get a full 中文详解
 token_budget_per_run = 200000
-# http_proxy = "http://127.0.0.1:7890"  # uncomment if needed for overseas feeds
+
+# === 代理（一等公民）===
+# 多数信息源是西方站点，国内通常需要代理。解析顺序：
+#   1. 下面显式 http_proxy（若设置，优先、并忽略环境变量代理）
+#   2. 否则尊重环境变量 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY（use_env_proxy=true，默认）
+#   3. use_env_proxy=false 则强制直连
+# 跑 `python -m radar --mode doctor` 会经解析后的代理实测各源可达性。
+use_env_proxy = true
+# http_proxy = "http://127.0.0.1:7890"   # 显式覆盖；设了它就忽略环境变量代理
 
 [models]            # claude -p model tier per stage (controls subscription quota)
 triage = "haiku"

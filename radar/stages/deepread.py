@@ -28,12 +28,11 @@ class DeepReadStage(Stage):
             return
         top = ctx.items[: ctx.config.deepread_top_k]
         system = Paths.prompts.joinpath("deepread.md").read_text(encoding="utf-8")
-        proxy = ctx.config.resolved_proxy()
 
         def work(it: Item) -> None:
             fetched = ""
             try:
-                fetched = fetch_article_text(it.url, proxy=proxy, max_chars=30000)
+                fetched = fetch_article_text(it.url, config=ctx.config, max_chars=30000)
             except Exception as e:  # noqa: BLE001
                 ctx.log.warn("deepread fetch failed", url=it.url, error=repr(e)[:120])
             it.full_text = fetched or None

@@ -73,7 +73,54 @@ def cmd_doctor() -> int:
         except Exception as e:  # noqa: BLE001
             check("sources.yaml parses", False, repr(e))
     else:
-        check("sources.yaml present", False, "not created yet (P0 task #2)", warn=True)
+        check("sources.yaml present", False, "not created yet", warn=True)
+
+    # --- real reachability through the resolved proxy (sources are mostly Western) ---
+    import time as _time
+
+    import requests as _requests
+    try:
+        cfg = load_config()
+        proxies, trust_env = cfg.proxy_settings()
+        if proxies:
+            proxy_desc = f"explicit {cfg.http_proxy}"
+        elif trust_env:
+            env_p = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+            proxy_desc = f"env {env_p}" if env_p else "direct (no env proxy set)"
+        else:
+            proxy_desc = "direct (env proxy disabled)"
+        check("proxy resolved", True, detail=proxy_desc)
+
+        probes = {
+            "openai": "https://openai.com/news/rss.xml",
+            "huggingface": "https://huggingface.co/api/daily_papers",
+            "github": "https://github.com/anthropics/claude-code/releases.atom",
+            "arxiv": "http://export.arxiv.org/api/query?search_query=cat:cs.AI&max_results=1",
+        }
+        sess = _requests.Session()
+        sess.trust_env = trust_env
+        reachable = 0
+        for name, url in probes.items():
+            t0 = _time.monotonic()
+            try:
+                r = sess.get(url, proxies=proxies, timeout=10,
+                             headers={"User-Agent": "agent-radar/doctor"})
+                r.raise_for_status()
+                check(f"reach: {name}", True, detail=f"{(_time.monotonic() - t0) * 1000:.0f}ms")
+                reachable += 1
+            except Exception as e:  # noqa: BLE001
+                check(f"reach: {name}", False, f"{type(e).__name__}: {str(e)[:50]}")
+        if reachable == 0:
+            check("connectivity", False,
+                  "ALL probes failed — set a proxy in config.toml (sources are mostly Western)")
+        elif reachable < len(probes):
+            none_proxy = not proxies and not trust_env
+            check("connectivity", not none_proxy,
+                  f"{reachable}/{len(probes)} reachable"
+                  + ("; no proxy set — consider one" if none_proxy else ""),
+                  warn=not none_proxy)
+    except Exception as e:  # noqa: BLE001
+        check("reachability", False, repr(e))
 
     print("\n" + ("all good ✓" if ok else "issues found ✗"))
     return 0 if ok else 1

@@ -67,10 +67,15 @@ class RadarConfig(BaseModel):
     freshness_hours: float = 48.0          # daily: dedup makes a generous window safe
     weekly_freshness_hours: float = 192.0
     relevance_threshold: float = 6.0
-    triage_pool_cap: int = 80          # cap candidates sent to the triage LLM (cost control)
+    triage_pool_cap: int = 200         # safety ceiling on candidates sent to triage (recency-trimmed if exceeded)
+    finalist_pool: int = 24            # how many survivors go to the rerank stage
+    max_per_source: int = 3            # diversity: max items from one source in the final selection
     deepread_top_k: int = 6
+
     token_budget_per_run: int = 200_000
-    http_proxy: Optional[str] = None
+    # --- proxy (first-class; many sources are Western and need a proxy from CN) ---
+    http_proxy: Optional[str] = None   # explicit override; if set, wins and env proxies are ignored
+    use_env_proxy: bool = True         # else honor HTTPS_PROXY/HTTP_PROXY/ALL_PROXY from the environment
 
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
@@ -81,9 +86,18 @@ class RadarConfig(BaseModel):
     def max_items(self, mode: str) -> int:
         return self.weekly_max_items if mode == "weekly" else self.daily_max_items
 
+    def proxy_settings(self) -> "tuple[Optional[dict], bool]":
+        """Return (proxies_dict_or_None, trust_env) for a requests call.
+        Explicit config proxy wins (and disables env). Otherwise honor the
+        ambient HTTPS_PROXY/HTTP_PROXY/ALL_PROXY env vars (the user's real setup),
+        unless use_env_proxy is turned off (then force direct)."""
+        if self.http_proxy:
+            return {"http": self.http_proxy, "https": self.http_proxy}, False
+        if self.use_env_proxy:
+            return None, True
+        return None, False
+
     def resolved_proxy(self) -> Optional[str]:
-        # Only an explicitly-configured proxy — never the ambient HTTP_PROXY env
-        # (which in this setup is a corp proxy unreachable from the user's Mac).
         return self.http_proxy
 
 

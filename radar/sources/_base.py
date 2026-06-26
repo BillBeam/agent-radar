@@ -24,10 +24,10 @@ class BaseSource(SourceAdapter):
     def __init__(self, config: Any = None, log: Any = None):
         self.config = config
         self.log = log
-        self.proxy = config.resolved_proxy() if config is not None else None
+        # Proxy is first-class: explicit config wins, else honor env (HTTPS_PROXY…).
+        self._proxies, trust_env = config.proxy_settings() if config is not None else (None, False)
         self._session = requests.Session()
-        # Ignore ambient env proxies unless we explicitly configured one.
-        self._session.trust_env = bool(self.proxy)
+        self._session.trust_env = trust_env
 
     # -- HTTP --
     def _get(self, url: str, *, accept: Optional[str] = None,
@@ -35,11 +35,10 @@ class BaseSource(SourceAdapter):
         headers = {"User-Agent": USER_AGENT}
         if accept:
             headers["Accept"] = accept
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         last: Optional[Exception] = None
         for attempt in range(retries + 1):
             try:
-                r = self._session.get(url, headers=headers, proxies=proxies, timeout=timeout)
+                r = self._session.get(url, headers=headers, proxies=self._proxies, timeout=timeout)
                 r.raise_for_status()
                 return r
             except Exception as e:  # noqa: BLE001

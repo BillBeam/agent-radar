@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from html.parser import HTMLParser
-from typing import Optional
+from typing import Any
 
 import requests
 
@@ -43,11 +43,11 @@ class _Extractor(HTMLParser):
             self.parts.append(data)
 
 
-def fetch_article_text(url: str, proxy: Optional[str] = None,
+def fetch_article_text(url: str, config: Any = None,
                        timeout: float = 25.0, max_chars: int = 8000) -> str:
     session = requests.Session()
-    session.trust_env = bool(proxy)
-    proxies = {"http": proxy, "https": proxy} if proxy else None
+    proxies, trust_env = config.proxy_settings() if config is not None else (None, False)
+    session.trust_env = trust_env
     r = session.get(url, timeout=timeout, proxies=proxies,
                     headers={"User-Agent": "agent-radar/0.1 (deepread)"})
     r.raise_for_status()
