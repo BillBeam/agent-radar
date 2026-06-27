@@ -54,3 +54,25 @@
 **feedback 存内容快照**（web Claude 建议）：不只 `{id:{vote,ts}}`，存 `{id:{vote,ts,title,source,tags,url}}`。**为什么**：P2 要从 👍/👎 学口味，需要条目内容；光存 id 要回头 join 一堆每日 items.json，又脆又烦。快照让 P2 自包含、不怕 items.json 被清/挪。
 
 **mark 子命令 + 健壮**：`radar mark <date> <N...> [--up/--down]`（argparse 子命令，默认 --up）。编号越界跳过给提示、items.json 不存在不崩、重复 mark 后写覆盖。`[N]` 前缀克制（标题前一个小号，不破坏 A 的干净卡片）。**不改 models.py**：编号来自持久化顺序、不入 Item。
+
+---
+
+# P1 · 尺子（eval）
+
+## Block ① 忠实度 eval + 原文 sidecar
+
+**eval 是独立命令、不进每日管线**：`radar --mode eval [date]` 走自己的 `cmd_eval`，**不经** `run_mode`/pipeline/run-lock。**为什么**：eval 是"改系统时才跑"的度量工具，只读那天产物 + 写 `data/eval/`，不抓取/不投递/不动 seen/digest。塞进管线会拖慢每日跑、语义也不对（管线"产出今天"，eval"回看某天"）。
+
+**faithfulness：LLM 做 claim 级 entailment，代码算 support_rate**（RAGAS faithfulness 式）：裁判把详解拆成原子陈述、逐条判 supported/unsupported/distorted + 证据，**eval 代码**统计 `support_rate = supported/factual`。**为什么不让 LLM 直接吐 1–5**：① 确定性、跨次可比（同 verdict 永远同分）；② 抗 LLM-judge 的 leniency 偏差（调研：裁判 TNR 可低至 <25%，gestalt 分易被"写得专业/长"带高）；③ 把"判断"（LLM 强项）与"计分"（算术）分开。**反 leniency 设计**：prompt 要求 supported 必引证原文片段、默认怀疑、具体数字/API 名从严。
+
+**commentary 不计分**：详解里作者自己的解读/定位/价值/takeaway（deepread prompt 明确要这些）标 `commentary`、**不进 support_rate**。**为什么**：faithfulness 只该核"关于文章的事实陈述"有无原文支撑；把增值评论当幻觉罚分是误伤。
+
+**原文 grounding：sidecar → full_text → skip，绝不 re-fetch**：① deepread 把实际喂 LLM 的 `basis[:28000]` 写 `data/deepread_sources/{date}/{id}.json`（go-forward 精确）；② 回退到 `items.json` 里**已持久化的 `full_text`**（deepread 时捕获，近似——缺 summary 前缀、截断 30000 vs 28000，故标记可能有个别假阳性，读报告时当"候选"）；③ 都没有→skip。**为什么不 re-fetch**：重抓可能与 deepread 当时看到的版本不同，会让忠实度判断本身不忠实。**关键发现**：`full_text` 本就进了 items.json，所以 eval 能评历史 digest（含 2026-06-26，那天还没 sidecar）。
+
+**sidecar 写入防御性**：deepread 是每日关键路径，sidecar 仅 eval 辅助——`try/except` 包住、失败只 `log.warn` 不中断深读（仿 `_write_last_run`）。
+
+**裁判并发**：`eval_faithfulness` 用 `ThreadPoolExecutor(max_workers=3)`（仿 deepread），墙钟由最慢单篇决定而非求和。**为什么**：6 篇顺序 × 单篇可达 240s = 可能 >10min；并发后约 2 波。`pool.map` 保序，per_item 仍按 items 顺序。
+
+**覆盖率必报**：support_rate 均值**只对 scored 篇**取，并显式带"跳过 Y、无事实陈述 K、总 N"。**为什么**：超 top-6 的篇没深读→explain=None→skip；不报覆盖率会把"均值 X%"误读成全量质量。
+
+**judge 模型档**：`ModelsConfig.judge="sonnet"`（config 加字段，**非 models.py 契约**）。离线、质量优先；可在 config.toml 覆盖为 opus。

@@ -8,8 +8,10 @@ can't be fetched degrade to title+link rather than fabricating. Runs concurrentl
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 from ..core.config import Paths
+from ..core.io import atomic_write_json
 from ..core.models import Item, RunContext
 from ..core.ports import Stage
 from ..core.registry import register
@@ -17,6 +19,25 @@ from ._article import fetch_article_text
 
 MIN_BASIS_CHARS = 200
 NO_TEXT = "（原文正文未能获取，仅标题+链接可读）"
+
+
+def _write_source_sidecar(ctx: RunContext, it: Item, source_text: str) -> None:
+    """Persist the *exact* grounding text deepread fed the LLM, keyed by item id,
+    so a later offline eval (P1 尺子) can judge whether the 详解 is faithful to it.
+
+    Best-effort by design: deepread is the daily critical path, and this is only an
+    eval aid — a failed write must NEVER interrupt the deep-read (cf. _write_last_run).
+    """
+    try:
+        date = ctx.started_at.astimezone().strftime("%Y-%m-%d")
+        atomic_write_json(
+            Paths.deepread_sources / date / f"{it.id}.json",
+            {"item_id": it.id, "url": it.url, "title": it.title,
+             "source_text": source_text, "chars": len(source_text),
+             "ts": datetime.now().astimezone().isoformat(timespec="seconds")},
+        )
+    except Exception as e:  # noqa: BLE001 — an eval-aid write must not break deepread
+        ctx.log.warn("deepread sidecar write failed", id=it.id, error=repr(e)[:120])
 
 
 @register("stage", "deepread")
@@ -41,8 +62,10 @@ class DeepReadStage(Stage):
                 it.explain_zh = NO_TEXT
                 ctx.bump("deepread.no_text")
                 return
+            grounding = basis[:28000]   # the exact source text the LLM sees
+            _write_source_sidecar(ctx, it, grounding)
             user = (f"标题: {it.title}\n来源: {it.source_name}\n链接: {it.url}\n\n"
-                    f"原文:\n{basis[:28000]}")
+                    f"原文:\n{grounding}")
             res = ctx.llm.complete(user, system=system,
                                    model=ctx.config.models.deepread, timeout=360)
             if res.ok and res.text.strip():

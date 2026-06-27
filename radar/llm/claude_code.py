@@ -76,11 +76,13 @@ class ClaudeCodeLLM(LLMClient):
         max_tokens: Optional[int] = None,
         allow_tools: Optional[list[str]] = None,
         timeout: Optional[float] = None,
+        retries: int = 3,
     ) -> LLMResult:
         model = model or "sonnet"
         timeout = timeout or 240.0
+        retries = max(1, retries)
         last_err = "unknown"
-        for attempt in range(3):
+        for attempt in range(retries):
             try:
                 ok, text, data = self._run(prompt, system, model, timeout)
             except subprocess.TimeoutExpired:
@@ -100,7 +102,7 @@ class ClaudeCodeLLM(LLMClient):
             if self.log:
                 self.log.warn("llm call failed", model=model, attempt=attempt,
                               transient=transient, error=text[:160])
-            if not transient or attempt == 2:
+            if not transient or attempt == retries - 1:
                 break
             time.sleep(2.0 * (attempt + 1))  # backoff on overload
 

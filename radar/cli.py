@@ -197,6 +197,35 @@ def cmd_validate() -> int:
     return validate()
 
 
+def cmd_eval(date: str | None) -> int:
+    """`radar --mode eval <YYYY-MM-DD>` — offline quality eval of a past digest.
+    Measures 详解 faithfulness (+ ranking, P1·②) against that day's products. Reads
+    only; writes a comparable report to data/eval/{date}.json. Needs the judge LLM."""
+    if not date:
+        print("usage: radar --mode eval <YYYY-MM-DD>  (the digest date to evaluate)")
+        return 2
+    from .core import registry
+    from .core.config import load_config
+    from .core.runner import build_llm
+    from .eval.run import run_eval
+    from .obs import Logger
+
+    registry.load_adapters()           # so the claude_code LLM adapter is registered
+    config = load_config()
+    from .core.config import Paths
+    log = Logger("eval", log_path=Paths.state / "radar.log", echo=False)  # keep retry/limit warnings
+    llm = build_llm(config, log)
+    if llm is None:
+        print("no LLM backend available (claude CLI) — eval needs the judge model.")
+        log.close()
+        return 1
+    try:
+        report = run_eval(date, llm=llm, config=config)
+    finally:
+        log.close()
+    return 0 if report else 1
+
+
 def cmd_run(mode: str, dry_run: bool) -> int:
     from .core.runner import run_mode
     ctx = run_mode(mode)
@@ -218,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(prog="radar", description="agent-radar")
     p.add_argument("--mode", default="daily", choices=MODES)
+    p.add_argument("date", nargs="?", default=None,
+                   help="for --mode eval: digest date YYYY-MM-DD to evaluate")
     p.add_argument("--dry-run", action="store_true", help="fetch+triage but don't deliver")
     p.add_argument("--query", default=None, help="for --mode query")
     args = p.parse_args(argv)
@@ -228,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_status()
     if args.mode == "validate":
         return cmd_validate()
+    if args.mode == "eval":
+        return cmd_eval(args.date)
     if args.mode in ("daily", "weekly"):
         return cmd_run(args.mode, args.dry_run)
     return cmd_stub(args.mode)

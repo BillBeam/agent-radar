@@ -12,6 +12,8 @@ data/trace/*
 data/metrics/*
 data/feedback/*
 data/state/*
+data/eval/*
+data/deepread_sources/*
 data/self_improve/proposals/*
 data/self_improve/eval_runs/*
 !data/**/.gitkeep
@@ -27,5 +29,7 @@ venv/
 *.egg-info/
 .pytest_cache/
 
-# os
+# os / editors
 .DS_Store
+.idea/
+.vscode/

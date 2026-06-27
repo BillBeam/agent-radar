@@ -30,6 +30,8 @@ class Paths:
     metrics = DATA_DIR / "metrics"
     state = DATA_DIR / "state"
     feedback = DATA_DIR / "feedback"
+    eval = DATA_DIR / "eval"                    # offline eval reports (P1 尺子)
+    deepread_sources = DATA_DIR / "deepread_sources"   # exact grounding text deepread fed the LLM (for faithfulness eval)
     sources_yaml = CONFIG_DIR / "sources.yaml"
     taxonomy_yaml = CONFIG_DIR / "taxonomy.yaml"
     blocklist_yaml = CONFIG_DIR / "blocklist.yaml"
@@ -57,6 +59,7 @@ class ModelsConfig(BaseModel):
     triage: str = "haiku"              # cheap, high-volume scoring
     deepread: str = "sonnet"           # grounded 详解
     synthesize: str = "sonnet"
+    judge: str = "sonnet"              # offline eval judge (faithfulness / ranking); quality > cost
 
 
 class RadarConfig(BaseModel):
