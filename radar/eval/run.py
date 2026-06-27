@@ -13,6 +13,7 @@ from typing import Any, Optional
 from ..core.config import Paths, RadarConfig, load_config
 from ..core.io import atomic_write_json, read_json
 from .faithfulness import eval_faithfulness
+from .ranking import eval_ranking
 
 EVAL_SCHEMA_VERSION = 1   # bump if the report shape changes (keeps cross-run reports comparable)
 
@@ -42,14 +43,23 @@ def run_eval(date: str, *, llm: Any, config: Optional[RadarConfig] = None) -> Op
     faith = eval_faithfulness(llm, items, date, model=config.models.judge,
                               prior=prior_faith, checkpoint=_persist)
 
+    # ranking: feedback pairwise (primary) + independent-judge stability diagnostic (one
+    # cheap LLM call). faithfulness above is fully resumed from cache on a re-run, so the
+    # marginal cost of re-running eval is mostly this single judge call.
+    feedback = read_json(Paths.feedback / f"{date}.json", {})
+    ranking = eval_ranking(items, feedback if isinstance(feedback, dict) else {},
+                           llm=llm, model=config.models.judge)
+
     report = {
         "schema_version": EVAL_SCHEMA_VERSION,
         "date": date,
         "n_items": len(items),
         "faithfulness": faith,
+        "ranking": ranking,
     }
     atomic_write_json(Paths.eval / f"{date}.json", report)
     _print_faithfulness(date, faith)
+    _print_ranking(ranking)
     print(f"\nfull report → data/eval/{date}.json")
     return report
 
@@ -91,3 +101,29 @@ def _print_faithfulness(date: str, f: dict) -> None:
             print(f"   • [{(r.get('title') or '')[:36]}] {c['verdict']}: {c['claim']}")
             if c.get("why"):
                 print(f"       ↳ {c['why']}")
+
+
+def _print_ranking(r: dict) -> None:
+    """Ranking summary. Below threshold, the feedback metric is shown as 'not a signal'
+    (not a clean %); the judge agreement is shown as a stability diagnostic, not a score."""
+    print("\n=== eval · 排序合理性 ===")
+    fb = r.get("feedback") or {}
+    if fb.get("is_signal"):
+        print(f"  反馈成对准确率 {_pct(fb['pairwise_accuracy'])}"
+              f"（👍 排在 👎 前 {fb['correct_pairs']}/{fb['n_pairs']}；{fb['note']}）")
+    else:
+        # thin data: do NOT lead with a 0/50/100% that reads as a result
+        print(f"  反馈相关性：{fb.get('note', '暂无')}"
+              f"（👍{fb.get('n_up', 0)} · 👎{fb.get('n_down', 0)} → {fb.get('n_pairs', 0)} 对）")
+
+    j = r.get("independent_judge")
+    if not j:
+        return
+    if j.get("kendall_tau") is not None:
+        print(f"  独立裁判一致度〔稳定性诊断，非「排得对不对」〕："
+              f"Kendall τ={j['kendall_tau']}，成对一致 {_pct(j['pairwise_agreement'])}（n={j['n']}）")
+        print(f"    ↳ {j.get('note', '')}")
+        if j.get("low_n_caveat"):
+            print("    ↳ n 偏小，τ 噪声较大，仅供参考")
+    else:
+        print(f"  独立裁判：{j.get('error') or j.get('note') or '不可用'}")

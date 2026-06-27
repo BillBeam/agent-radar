@@ -71,8 +71,24 @@
 
 **sidecar 写入防御性**：deepread 是每日关键路径，sidecar 仅 eval 辅助——`try/except` 包住、失败只 `log.warn` 不中断深读（仿 `_write_last_run`）。
 
-**裁判并发**：`eval_faithfulness` 用 `ThreadPoolExecutor(max_workers=3)`（仿 deepread），墙钟由最慢单篇决定而非求和。**为什么**：6 篇顺序 × 单篇可达 240s = 可能 >10min；并发后约 2 波。`pool.map` 保序，per_item 仍按 items 顺序。
+**裁判执行 = 顺序 + 续跑（本会话在订阅限流下打磨出的最终形态）**：`max_workers=1`——并发会在限流下互相饿死触发超时（实测 3 路 / 2 路都超时，顺序则单篇全速 ~156s）；`timeout=420` + `retries=1`（超时不再重试 3× 白烧，靠续跑补）；**逐篇 checkpoint 落盘**（中途被杀/限流也不丢已判的）；失败**分类**(rate_limit/timeout/parse) 而非闷头吞；截断/代码围栏输出用 `salvage_objects` **救回完整扁平 claim**（裁判常开 ```json 又被截断）；rate_limit 早停不空转。**为什么**：`claude -p` 在订阅 5h 窗口接近上限时每篇可达数分钟，盲目并发 + 3× 重试是 token 黑洞——这套是真金白银烧出来的教训。`complete()` 加可选 `retries`（默认 3 不变）让 eval 能 opt out。
 
 **覆盖率必报**：support_rate 均值**只对 scored 篇**取，并显式带"跳过 Y、无事实陈述 K、总 N"。**为什么**：超 top-6 的篇没深读→explain=None→skip；不报覆盖率会把"均值 X%"误读成全量质量。
 
 **judge 模型档**：`ModelsConfig.judge="sonnet"`（config 加字段，**非 models.py 契约**）。离线、质量优先；可在 config.toml 覆盖为 opus。
+
+## Block ② 排序 eval（含 web Claude 评审的三点）
+
+**两维度、刻意不同权重**：主 = **反馈成对准确率**（唯一"排得对不对"的信号，随 mark 成长）；次 = **独立裁判一致度**（**稳定性诊断，不是正确性分**）。
+
+**独立裁判必须用独立框架（web Claude 抓的关键点 ①）**：生产 `rerank.md` 按"深度+新颖+当下值得读"排；`eval_rank.md` 故意按**"可直接迁移进自己系统的工程价值"**排（机制/接口是否具体可复现、结论是否可操作），并**刻意不看**新颖/热点/时间/篇幅。**为什么**：若 eval_rank 照抄 rerank，高 tau 只是"模型跟自己一致"的同义反复，测不出"重要性这个标准本身对不对"（标准错了两边一起错）。独立框架下 tau 才有"第二意见"价值——本次实测 **τ=-0.2**，正说明两套标准给出不同序（独立性成立），而非排错。
+
+**tau 是诊断不是分**：报告明确标"〔稳定性/可复现性诊断，非正确性分〕；低 τ 常见于质量相近条目，不代表排错"。**绝不优化 tau**。真正"排得对不对"看反馈相关性。
+
+**破 position bias**：独立裁判**喂中性顺序**（按 id 排），系统显示序不能锚定它；`_item_brief` 只给标题/来源/标签/正文片段，**不给 score/reason/rank**（防系统判断泄漏进"第二意见"）。
+
+**薄数据诚实（web Claude 点 ②）**：反馈成对准确率 `n < MIN_PAIRS(10)` 时**不报干净百分比**，直接标"样本太少，暂不构成信号——0/50/100% 多为噪声"；0 对标"暂无足够反馈"。本次 n=2，如实标为非信号（而非"100%"）。
+
+**scope（web Claude 点 ③，知道即可）**：tau 测的是**选中那几条的顺序**，不是**选得对不对**（该选的有没有进来）——选择质量无 ground truth，反馈随时间是最接近的信号。
+
+**Kendall tau 纯 Python**（无 scipy 依赖）：concordant/discordant 对计数，`tau=(C-D)/总对数 ∈ [-1,1]`，并附成对一致率 `C/总对数`。`_parse_order` 容错：`{"order":[...]}` / 裸 list / `{"i":..}` 元素 / 截断都能解析，缺的编号补到末尾保持全排列。

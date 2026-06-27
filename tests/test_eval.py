@@ -277,3 +277,79 @@ def test_checkpoint_persists_after_each_item(tmp_path, monkeypatch):
                         checkpoint=lambda agg: seen.append(agg["n_scored"]))
     assert len(seen) == 2            # one checkpoint per item — progress is never lost
     assert seen[-1] == 2             # final checkpoint sees both scored
+
+
+# ================= Block ② ranking eval =================
+def _disp(*ids):
+    """Items in display order (index = rank)."""
+    return [{"id": i, "title": i.upper()} for i in ids]
+
+
+def test_feedback_pairwise_math_and_thin_guard():
+    from radar.eval.ranking import feedback_pairwise
+    items = _disp("a", "b", "c", "d")                  # ranks a0 b1 c2 d3
+    fb = {"a": {"vote": "up"}, "b": {"vote": "up"}, "d": {"vote": "down"}}
+    r = feedback_pairwise(items, fb)
+    assert r["n_up"] == 2 and r["n_down"] == 1 and r["n_pairs"] == 2
+    assert r["correct_pairs"] == 2 and r["pairwise_accuracy"] == 1.0   # both 👍 above 👎
+    assert r["is_signal"] is False and "样本太少" in r["note"]          # but n=2 → NOT a signal
+
+
+def test_feedback_pairwise_incorrect_pair():
+    from radar.eval.ranking import feedback_pairwise
+    items = _disp("a", "b", "c")                        # a0 b1 c2
+    fb = {"c": {"vote": "up"}, "a": {"vote": "down"}}   # 👍 c(rank2) is BELOW 👎 a(rank0)
+    r = feedback_pairwise(items, fb)
+    assert r["n_pairs"] == 1 and r["correct_pairs"] == 0 and r["pairwise_accuracy"] == 0.0
+
+
+def test_feedback_zero_pairs():
+    from radar.eval.ranking import feedback_pairwise
+    r = feedback_pairwise(_disp("a", "b"), {"a": {"vote": "up"}})   # no 👎
+    assert r["n_pairs"] == 0 and r["pairwise_accuracy"] is None
+    assert r["is_signal"] is False and "暂无" in r["note"]
+
+
+def test_kendall_tau():
+    from radar.eval.ranking import _kendall_tau
+    assert _kendall_tau(["a", "b", "c"], ["a", "b", "c"]) == (1.0, 1.0)     # identical
+    assert _kendall_tau(["a", "b", "c"], ["c", "b", "a"]) == (-1.0, 0.0)    # reversed
+    tau, agree = _kendall_tau(["a", "b", "c", "d"], ["a", "c", "b", "d"])   # one swap of 6 pairs
+    assert tau == round(4 / 6, 3) and agree == round(5 / 6, 3)
+    assert _kendall_tau(["a"], ["a"]) == (None, None)                       # <2 ids
+
+
+def test_parse_order_robustness():
+    from radar.eval.ranking import _parse_order
+    assert _parse_order({"order": [2, 0, 1]}, "", 3) == [2, 0, 1]
+    assert _parse_order([1, 0], "", 3) == [1, 0, 2]                 # dropped index appended
+    assert _parse_order({"order": [{"i": 1}, {"i": 0}]}, "", 2) == [1, 0]   # dict items
+    assert _parse_order({"order": [0, 0, 1]}, "", 2) == [0, 1]      # dedup
+    assert _parse_order("garbage", "no json here", 2) is None
+
+
+def test_independent_judge_tau(monkeypatch):
+    from radar.eval.ranking import independent_judge
+    items = [{"id": "a", "title": "A", "explain_zh": "x"},
+             {"id": "b", "title": "B", "explain_zh": "y"},
+             {"id": "c", "title": "C", "explain_zh": "z"}]
+    # neutral order (sorted by id) = a,b,c. Judge agrees → tau 1.0
+    r = independent_judge(items, llm=FakeJudge({"order": [0, 1, 2]}), model="m", system="s")
+    assert r["kendall_tau"] == 1.0 and r["n"] == 3 and "稳定性" in r["note"]
+    # judge reverses → tau -1.0
+    r2 = independent_judge(items, llm=FakeJudge({"order": [2, 1, 0]}), model="m", system="s")
+    assert r2["kendall_tau"] == -1.0
+
+
+def test_independent_judge_bad_output_and_too_few():
+    from radar.eval.ranking import independent_judge
+    items = [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}]
+    assert "error" in independent_judge(items, llm=FakeJudge("timeout"), model="m", system="s")
+    r = independent_judge([{"id": "a", "title": "A"}], llm=FakeJudge(), model="m", system="s")
+    assert r["n"] == 1 and "条目太少" in r["note"]
+
+
+def test_eval_ranking_no_llm_skips_judge():
+    from radar.eval.ranking import eval_ranking
+    r = eval_ranking(_disp("a", "b"), {"a": {"vote": "up"}}, llm=None)
+    assert r["independent_judge"] is None and r["feedback"]["n_up"] == 1
