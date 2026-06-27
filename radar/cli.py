@@ -199,21 +199,21 @@ def cmd_validate() -> int:
 
 
 def cmd_eval(date: str | None) -> int:
-    """`radar --mode eval <YYYY-MM-DD>` — offline quality eval of a past digest.
-    Measures 详解 faithfulness (+ ranking, P1·②) against that day's products. Reads
-    only; writes a comparable report to data/eval/{date}.json. Needs the judge LLM."""
-    if not date:
-        print("usage: radar --mode eval <YYYY-MM-DD>  (the digest date to evaluate)")
-        return 2
+    """`radar --mode eval <YYYY-MM-DD>` — offline quality eval of a past digest (详解
+    faithfulness + ranking); reads only, writes data/eval/{date}.json + .md. Needs the
+    judge LLM. With NO date, `radar --mode eval` prints the cross-day trend table (no LLM)."""
+    if not date:                       # no date → cross-day trend (just aggregates json, no LLM)
+        from .eval.run import run_trend
+        return run_trend()
+
     from .core import registry
-    from .core.config import load_config
+    from .core.config import Paths, load_config
     from .core.runner import build_llm
     from .eval.run import run_eval
     from .obs import Logger
 
     registry.load_adapters()           # so the claude_code LLM adapter is registered
     config = load_config()
-    from .core.config import Paths
     log = Logger("eval", log_path=Paths.state / "radar.log", echo=False)  # keep retry/limit warnings
     llm = build_llm(config, log)
     if llm is None:
@@ -221,10 +221,10 @@ def cmd_eval(date: str | None) -> int:
         log.close()
         return 1
     try:
-        report = run_eval(date, llm=llm, config=config)
+        result = run_eval(date, llm=llm, config=config)
     finally:
         log.close()
-    return 0 if report else 1
+    return 0 if result else 1
 
 
 def cmd_run(mode: str, dry_run: bool) -> int:

@@ -169,10 +169,13 @@ def test_sidecar_write_never_breaks_deepread(monkeypatch):
 
 
 # ---- cli routing ----
-def test_cmd_eval_requires_date():
+def test_cmd_eval_no_date_runs_trend(tmp_path, monkeypatch):
+    # no date → cross-day trend (no LLM); empty dir → graceful "no reports", exit 0
+    import radar.eval.report as R
     from radar.cli import cmd_eval
-    assert cmd_eval(None) == 2
-    assert cmd_eval("") == 2
+    monkeypatch.setattr(R.Paths, "eval", tmp_path)
+    assert cmd_eval(None) == 0
+    assert cmd_eval("") == 0
 
 
 def test_run_eval_missing_digest(tmp_path, monkeypatch):
@@ -353,3 +356,83 @@ def test_eval_ranking_no_llm_skips_judge():
     from radar.eval.ranking import eval_ranking
     r = eval_ranking(_disp("a", "b"), {"a": {"vote": "up"}}, llm=None)
     assert r["independent_judge"] is None and r["feedback"]["n_up"] == 1
+
+
+# ================= Block ③ report + top-line + trend =================
+def _eval_report(mean=0.9, n_scored=6, n_total=10, n_skip=4, n_issues=9,
+                 fb_signal=False, fb_acc=1.0, fb_pairs=2, tau=-0.2, agree=0.4, jn=10):
+    return {
+        "schema_version": 1, "date": "2026-06-26", "n_items": n_total,
+        "faithfulness": {
+            "mean_support_rate": mean, "n_scored": n_scored, "n_total": n_total,
+            "n_skipped": n_skip, "n_no_factual": 0, "n_issues": n_issues, "n_reused": 0,
+            "skip_breakdown": {"no_explain": n_skip} if n_skip else {}, "rate_limited": False,
+            "items": [
+                {"status": "scored", "grounding_source": "full_text", "support_rate": 0.73,
+                 "title": "Low one", "issues": [{"verdict": "unsupported",
+                                                 "claim": "X 脑补的论断", "why": "原文没有"}]},
+                {"status": "scored", "grounding_source": "full_text", "support_rate": 1.0,
+                 "title": "High one", "issues": []},
+                {"status": "skipped", "skip_reason": "no_explain", "title": "Skipped one"},
+            ],
+        },
+        "ranking": {
+            "feedback": {"is_signal": fb_signal, "pairwise_accuracy": fb_acc, "n_pairs": fb_pairs,
+                         "correct_pairs": fb_pairs, "n_up": 2, "n_down": 1, "note": "n"},
+            "independent_judge": ({"kendall_tau": tau, "pairwise_agreement": agree, "n": jn,
+                                   "note": "诊断", "low_n_caveat": False}
+                                  if tau is not None else None),
+        },
+    }
+
+
+def test_top_line_holds_three_red_lines():
+    from radar.eval.report import top_line
+    tl = top_line(_eval_report())                       # mean .9, 6/10, skip 4, 9 issues, fb 2 pairs, tau -0.2
+    # red line 1: coverage is mandatory
+    assert "忠实度 90%" in tl and "基于 6/10 篇" in tl and "跳过 4 篇" in tl and "标记幻觉/失真 9 处" in tl
+    # red line 2: thin feedback → NOT a bare percentage
+    assert "样本太少不构成信号（2 对）" in tl and "100%" not in tl
+    # red line 3: judge labelled a diagnostic
+    assert "〔诊断〕" in tl and "τ=-0.2" in tl
+
+
+def test_top_line_feedback_signal_branch():
+    from radar.eval.report import top_line
+    tl = top_line(_eval_report(fb_signal=True, fb_acc=0.83, fb_pairs=12))
+    assert "排序-反馈 83%（12 对）" in tl and "样本太少" not in tl
+
+
+def test_top_line_no_scored_items():
+    from radar.eval.report import top_line
+    tl = top_line(_eval_report(mean=None, n_scored=0, n_total=4, n_skip=4))
+    assert "忠实度 —（无可评篇" in tl
+
+
+def test_markdown_report_scannable_and_specific():
+    from radar.eval.report import markdown, top_line
+    rep = _eval_report()
+    md = markdown("2026-06-26", rep)
+    assert md.startswith("# Agent Radar eval — 2026-06-26")
+    assert top_line(rep) in md                          # top-line embedded verbatim
+    assert "## 忠实度" in md and "## 排序合理性" in md
+    assert "X 脑补的论断" in md                          # the specific low-score claim is pointed out
+    assert "schema v1" in md
+
+
+def test_trend_skips_bad_and_old_schema(tmp_path, monkeypatch):
+    import radar.eval.report as R
+    from radar.core.io import atomic_write_json
+    monkeypatch.setattr(R.Paths, "eval", tmp_path)
+    atomic_write_json(tmp_path / "2026-06-26.json", _eval_report())                    # good
+    atomic_write_json(tmp_path / "2026-06-20.json", {"schema_version": 999, "date": "x"})  # old schema
+    (tmp_path / "2026-06-19.json").write_text("{ not valid json", encoding="utf-8")    # corrupt
+    rows = R.trend_rows(1)
+    assert len(rows) == 1 and rows[0]["date"] == "2026-06-26"
+    assert rows[0]["faith"] == 0.9 and rows[0]["fb_signal"] is False
+
+
+def test_trend_empty_is_graceful(tmp_path, monkeypatch):
+    import radar.eval.report as R
+    monkeypatch.setattr(R.Paths, "eval", tmp_path)
+    assert R.print_trend(1) == 0

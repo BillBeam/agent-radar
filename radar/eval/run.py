@@ -1,10 +1,9 @@
 """Offline eval entry — `radar --mode eval [date]`.
 
 Reads a past day's products (`{date}.items.json`, `{date}.json` feedback) plus the
-grounding source, scores quality, and writes a comparable report to data/eval/{date}.json.
-This is a measurement tool — it never runs the daily pipeline and never mutates a digest.
-
-Block ① wires faithfulness; ranking (②) and the polished top-line report (③) extend this.
+grounding source, scores quality, and writes a comparable report to data/eval/{date}.json
+(+ a readable .md). This is a measurement tool — it never runs the daily pipeline and
+never mutates a digest. Rendering lives in report.py; this module just orchestrates.
 """
 from __future__ import annotations
 
@@ -12,10 +11,11 @@ from typing import Any, Optional
 
 from ..core.config import Paths, RadarConfig, load_config
 from ..core.io import atomic_write_json, read_json
+from . import report
 from .faithfulness import eval_faithfulness
 from .ranking import eval_ranking
 
-EVAL_SCHEMA_VERSION = 1   # bump if the report shape changes (keeps cross-run reports comparable)
+EVAL_SCHEMA_VERSION = 1   # bump if the report shape changes (keeps cross-day reports comparable)
 
 
 def run_eval(date: str, *, llm: Any, config: Optional[RadarConfig] = None) -> Optional[dict]:
@@ -50,80 +50,19 @@ def run_eval(date: str, *, llm: Any, config: Optional[RadarConfig] = None) -> Op
     ranking = eval_ranking(items, feedback if isinstance(feedback, dict) else {},
                            llm=llm, model=config.models.judge)
 
-    report = {
+    report_dict = {
         "schema_version": EVAL_SCHEMA_VERSION,
         "date": date,
         "n_items": len(items),
         "faithfulness": faith,
         "ranking": ranking,
     }
-    atomic_write_json(Paths.eval / f"{date}.json", report)
-    _print_faithfulness(date, faith)
-    _print_ranking(ranking)
-    print(f"\nfull report → data/eval/{date}.json")
-    return report
+    atomic_write_json(Paths.eval / f"{date}.json", report_dict)
+    report.emit(date, report_dict)                 # console top-line + sections, writes .md
+    print(f"\n完整报告 → data/eval/{date}.json + data/eval/{date}.md")
+    return report_dict
 
 
-def _pct(x: Optional[float]) -> str:
-    return "—" if x is None else f"{x * 100:.0f}%"
-
-
-def _print_faithfulness(date: str, f: dict) -> None:
-    """Minimal readable summary (Block ③ adds the polished top-line + markdown)."""
-    print(f"\n=== eval {date} · 忠实度 ===")
-    reused = f"，复用 {f['n_reused']}" if f.get("n_reused") else ""
-    print(f"support_rate 均值 {_pct(f['mean_support_rate'])} "
-          f"（基于 {f['n_scored']}/{f['n_total']} 篇有原文且有事实陈述的；"
-          f"跳过 {f['n_skipped']}，无事实陈述 {f['n_no_factual']}{reused}）；"
-          f"标记问题 {f['n_issues']} 处")
-    if f.get("skip_breakdown"):
-        print("  跳过明细：" + "，".join(f"{k}×{v}" for k, v in f["skip_breakdown"].items()))
-    # loud banner when the subscription window was hit — the run is incomplete, not bad
-    if f.get("rate_limited"):
-        print("  ⚠ 撞到额度/限流，已提前停手——剩余未评。额度恢复后重跑会自动续上"
-              "（已评的走缓存、不重花 token）。")
-
-    for r in f["items"]:
-        if r["status"] == "scored":
-            tag = "✓" if not r["issues"] else f"⚠{len(r['issues'])}"
-            cached = " (缓存)" if r.get("cached") else ""
-            print(f"  [{r['grounding_source']:9}] {tag} {_pct(r['support_rate'])}  "
-                  f"{(r.get('title') or '')[:50]}{cached}")
-        else:
-            why = r.get("skip_reason") or r["status"]
-            print(f"  [{'—':9}] · {why:16} {(r.get('title') or '')[:50]}")
-
-    # surface flagged issues so they can be eyeballed for false positives
-    flagged = [(r, c) for r in f["items"] if r["status"] == "scored" for c in r.get("issues", [])]
-    if flagged:
-        print("\n  标记的问题（读时当「候选」，注意 full_text 近似可能有假阳性）：")
-        for r, c in flagged:
-            print(f"   • [{(r.get('title') or '')[:36]}] {c['verdict']}: {c['claim']}")
-            if c.get("why"):
-                print(f"       ↳ {c['why']}")
-
-
-def _print_ranking(r: dict) -> None:
-    """Ranking summary. Below threshold, the feedback metric is shown as 'not a signal'
-    (not a clean %); the judge agreement is shown as a stability diagnostic, not a score."""
-    print("\n=== eval · 排序合理性 ===")
-    fb = r.get("feedback") or {}
-    if fb.get("is_signal"):
-        print(f"  反馈成对准确率 {_pct(fb['pairwise_accuracy'])}"
-              f"（👍 排在 👎 前 {fb['correct_pairs']}/{fb['n_pairs']}；{fb['note']}）")
-    else:
-        # thin data: do NOT lead with a 0/50/100% that reads as a result
-        print(f"  反馈相关性：{fb.get('note', '暂无')}"
-              f"（👍{fb.get('n_up', 0)} · 👎{fb.get('n_down', 0)} → {fb.get('n_pairs', 0)} 对）")
-
-    j = r.get("independent_judge")
-    if not j:
-        return
-    if j.get("kendall_tau") is not None:
-        print(f"  独立裁判一致度〔稳定性诊断，非「排得对不对」〕："
-              f"Kendall τ={j['kendall_tau']}，成对一致 {_pct(j['pairwise_agreement'])}（n={j['n']}）")
-        print(f"    ↳ {j.get('note', '')}")
-        if j.get("low_n_caveat"):
-            print("    ↳ n 偏小，τ 噪声较大，仅供参考")
-    else:
-        print(f"  独立裁判：{j.get('error') or j.get('note') or '不可用'}")
+def run_trend() -> int:
+    """`radar --mode eval` with no date — aggregate recent days into a trend table."""
+    return report.print_trend(EVAL_SCHEMA_VERSION)
