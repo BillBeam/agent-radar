@@ -45,6 +45,17 @@ class _Extractor(HTMLParser):
 
 def fetch_article_text(url: str, config: Any = None,
                        timeout: float = 25.0, max_chars: int = 8000) -> str:
+    # arXiv papers: the URL is the ABSTRACT page (both `arxiv` and `hf_papers` sources emit
+    # arxiv.org/abs/{id}). Fetch the real paper body instead, so the 详解 is grounded in what
+    # the paper says rather than opus's prior. Falls through to the abstract below if no full
+    # text can be had. (Lazy import avoids an _article↔_arxiv cycle.)
+    from ._arxiv import arxiv_id_from_url, fetch_arxiv_fulltext
+    aid = arxiv_id_from_url(url)
+    if aid:
+        full = fetch_arxiv_fulltext(aid, config, timeout=max(timeout, 30.0), max_chars=max_chars)
+        if full:
+            return full
+
     session = requests.Session()
     proxies, trust_env = config.proxy_settings() if config is not None else (None, False)
     session.trust_env = trust_env

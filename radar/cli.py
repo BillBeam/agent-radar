@@ -96,6 +96,7 @@ def cmd_doctor() -> int:
             "huggingface": "https://huggingface.co/api/daily_papers",
             "github": "https://github.com/anthropics/claude-code/releases.atom",
             "arxiv": "http://export.arxiv.org/api/query?search_query=cat:cs.AI&max_results=1",
+            "arxiv-html": "https://arxiv.org/html/2402.08954",   # full-text grounding source
         }
         sess = _requests.Session()
         sess.trust_env = trust_env

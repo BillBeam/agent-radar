@@ -12,6 +12,7 @@ dependencies = [
     "PyYAML>=6.0",
     "feedparser>=6.0",
     "requests>=2.31",
+    "pypdf>=4.0",        # arXiv full-text PDF fallback (deep-read grounding)
 ]
 
 [project.optional-dependencies]

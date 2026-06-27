@@ -92,3 +92,19 @@
 **scope（web Claude 点 ③，知道即可）**：tau 测的是**选中那几条的顺序**，不是**选得对不对**（该选的有没有进来）——选择质量无 ground truth，反馈随时间是最接近的信号。
 
 **Kendall tau 纯 Python**（无 scipy 依赖）：concordant/discordant 对计数，`tau=(C-D)/总对数 ∈ [-1,1]`，并附成对一致率 `C/总对数`。`_parse_order` 容错：`{"order":[...]}` / 裸 list / `{"i":..}` 元素 / 截断都能解析，缺的编号补到末尾保持全排列。
+
+---
+
+# arXiv 正文抓全（eval 驱动的聚焦修复；roadmap P3「正文抓全」提前做）
+
+**根因（P1 忠实度 eval 在 2026-06-26 逮出的）**：deepread 抓 arXiv 时 `it.url` 是**摘要页**，`fetch_article_text` 只拿到摘要(~1.5–4K)，opus 凭摘要 + 自身背景知识写详解 → 补的定义/因果链/统计背景在摘要里根本没有 → 裁判正确判 unsupported（arXiv 篇 73–86%，flag 多为"脑补"）。
+
+**修法 = 把 deepread 拿到的原文从摘要换成全文**（**不改** deepread 的 LLM 调用 / 详解逻辑，只换原文来源）。
+- **识别靠 URL/id 模式不靠源名**：`arxiv.org/{abs,pdf,html}/{id}` + `huggingface.co/papers/{id}`。arxiv 源和 hf_papers 源的条目**都是 arxiv.org/abs/{id} URL**（hf_papers 显式拼 `arxiv.org/abs/{arxiv_id}`），一个修复覆盖两源。
+- **回退链**：`arxiv.org/html/{id}`（官方 HTML，新论文覆盖在涨、最干净）→ `ar5iv.org/html/{id}`（LaTeXML 镜像，覆盖更广）→ `arxiv.org/pdf/{id}`（pypdf 解析，全覆盖兜底）→ **摘要**（最后兜底=原行为）。`MIN_FULLTEXT=4000` 闸门：抓回文本不够长（stub/摘要）就走下一档。**任何失败都回退、绝不崩/丢这篇**。
+- **为什么 HTML 优先 PDF 兜底**：LaTeXML HTML 干净、复用现有 `_Extractor` 即可；PDF 解析噪声多、仅兜底。**实测 2026-06-26 两篇都走 arxiv-html、2s 拿到 30K 真正文**。
+- **走代理**：复用 `config.proxy_settings()`；`doctor` 加 `arxiv-html` 探测点。**token 纪律**：截到 `max_chars`(deepread 传 30000) 再喂 opus——30K 全文前段（摘要+引言+方法+前部结果）远胜 1.5K 摘要、token 可控。**去版本号**：html/pdf URL 用 base id（`…v1`→base），base 永远解析到最新版、更稳。
+- **依赖**：加 `pypdf>=4.0`（纯 Python、轻；`_try_pdf` 懒导入，缺了优雅跳过不崩）。**无 import cycle**：`_arxiv` 顶层 import `_article` 的 `_Extractor`，`_article` 在函数内**懒导入** `_arxiv`。
+- **副作用（好的）**：Block① 的 grounding sidecar 和 items.json 的 `full_text` 自动变成全文 → eval 的 grounding 也跟着变准。
+
+**闭环兑现**：eval 指短板（arXiv 详解脑补）→ 抓全文 → eval 复验。**同篇前后对比（item 1, arXiv 2606.26027）：摘要 grounding 4331 字 → 73%（4 处实质脑补 flag）；全文 grounding 30000 字 → 94%（factual 17 / supported 16）。4 处脑补全消失（control tokens 定义 / 超越 SFT / off-policy 定义 / 崩溃因果链 现都在全文里有据），只剩 1 处琐碎残留（"GRPO 全称…"——外部知识、原文未展开）**。这是当初做 P1 尺子的回报。
