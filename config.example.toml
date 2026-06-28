@@ -1,0 +1,42 @@
+# Agent Radar — example config. Copy to `config.toml` (gitignored) and fill in.
+# ⚠️ SECRETS (DingTalk client_id/secret, webhook secret) GO IN ENV VARS, NOT IN THIS FILE.
+
+timezone = "Asia/Shanghai"
+daily_max_items = 10
+relevance_threshold = 6.0
+
+# Proxy is first-class — most sources are Western. By default env HTTPS_PROXY is honored.
+# http_proxy = "http://127.0.0.1:7890"   # explicit override (wins over env)
+use_env_proxy = true
+
+[models]
+triage = "haiku"      # cheap, high-volume scoring
+deepread = "opus"     # grounded 中文详解
+synthesize = "sonnet"
+judge = "sonnet"      # offline eval judge (P1)
+
+[channels]
+local = true          # always-on local markdown archive
+macos = true          # desktop notification
+
+# --- Markdown push via a CUSTOM-ROBOT webhook (kept as a fallback for the cards) ---
+# [channels.dingtalk]
+# webhook = "https://oapi.dingtalk.com/robot/send?access_token=..."
+# secret  = "SEC..."            # optional 加签 secret
+
+# --- Interactive 👍/👎 CARDS via an ENTERPRISE-INTERNAL app robot (Phase A) ---
+# An empty [channels.dingtalk_card] section is enough to ENABLE it; ids may live here OR in env
+# (env wins). client_id/client_secret are NEVER stored here — env only.
+# [channels.dingtalk_card]
+# card_template_id = "...."     # interactive-card template id  (or env DINGTALK_CARD_TEMPLATE_ID)
+# user_id          = "...."     # your staffId, 1v1 recipient   (or env DINGTALK_USER_ID)
+# robot_code       = "...."     # console → 机器人 → 复制 RobotCode (or env DINGTALK_ROBOT_CODE)
+
+# =====================================================================================
+# ENV VARS (export these in your shell / a gitignored .env — NEVER commit them):
+#   export DINGTALK_CLIENT_ID=...          # AppKey   of the 企业内部应用「Agent雷达」
+#   export DINGTALK_CLIENT_SECRET=...      # AppSecret
+#   export DINGTALK_ROBOT_CODE=...         # RobotCode (机器人页「复制 RobotCode」)
+#   export DINGTALK_USER_ID=...            # your staffId (or send the bot any message → `serve` logs it)
+#   export DINGTALK_CARD_TEMPLATE_ID=...   # the interactive card template id
+# =====================================================================================

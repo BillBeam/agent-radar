@@ -13,7 +13,7 @@ import sys
 from importlib import import_module
 from pathlib import Path
 
-MODES = ["daily", "weekly", "validate", "doctor", "status", "query", "eval", "evolve"]
+MODES = ["daily", "weekly", "validate", "doctor", "status", "query", "eval", "evolve", "serve"]
 
 
 def cmd_doctor() -> int:
@@ -145,10 +145,9 @@ def cmd_mark(argv: list[str]) -> int:
     Numbers are the [N] shown in the digest; they map to {date}.items.json (persisted
     in the same display order). Feedback snapshots item content (title/source/tags/url)
     so P2 personalization is self-contained. Default vote = up."""
-    from datetime import datetime
-
     from .core.config import Paths
-    from .core.io import atomic_write_json, read_json
+    from .core.feedback import record_feedback
+    from .core.io import read_json
 
     p = argparse.ArgumentParser(prog="radar mark",
                                 description="thumbs up/down digest items (feeds P2 personalization)")
@@ -166,25 +165,16 @@ def cmd_mark(argv: list[str]) -> int:
               f"(looked for data/digests/{a.date}.items.json)")
         return 1
 
-    feedback = read_json(Paths.feedback / f"{a.date}.json", {})
-    if not isinstance(feedback, dict):
-        feedback = {}
-    ts = datetime.now().astimezone().isoformat(timespec="seconds")
     marked = 0
     for num in a.numbers:
         if not (1 <= num <= len(items)):
             print(f"  ⚠ #{num} out of range (1..{len(items)}) — skipped")
             continue
         it = items[num - 1]
-        feedback[it["id"]] = {  # last-write-wins on repeat
-            "vote": vote, "ts": ts,
-            "title": it.get("title"), "source": it.get("source_name"),
-            "tags": it.get("tags", []), "url": it.get("url"),
-        }
+        record_feedback(a.date, it, vote)   # shared writer — same store/shape as the DingTalk callback
         print(f"  {'👍' if vote == 'up' else '👎'} [{num}] {(it.get('title') or '')[:56]}")
         marked += 1
     if marked:
-        atomic_write_json(Paths.feedback / f"{a.date}.json", feedback)
         print(f"saved {marked} vote(s) → data/feedback/{a.date}.json")
     return 0 if marked else 1
 
@@ -227,6 +217,14 @@ def cmd_eval(date: str | None) -> int:
     return 0 if result else 1
 
 
+def cmd_serve() -> int:
+    """`radar --mode serve` — long-running DingTalk Stream listener: catch 👍/👎 card taps →
+    write feedback (same store as `radar mark`) → flip the card to 已记录. Needs DingTalk env creds.
+    Run it 常驻 (launchd / nohup / tmux) so taps are caught after you close the terminal."""
+    from .serve import run_listener
+    return run_listener()
+
+
 def cmd_run(mode: str, dry_run: bool) -> int:
     from .core.runner import run_mode
     ctx = run_mode(mode)
@@ -262,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_validate()
     if args.mode == "eval":
         return cmd_eval(args.date)
+    if args.mode == "serve":
+        return cmd_serve()
     if args.mode in ("daily", "weekly"):
         return cmd_run(args.mode, args.dry_run)
     return cmd_stub(args.mode)

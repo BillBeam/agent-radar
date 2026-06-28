@@ -127,3 +127,21 @@
 **趋势从今天开攒**：聚合便宜、现在就上——将来一眼看出某次改动有没有让数字变好（如 arXiv 全文修复后，新 daily 的 arXiv 条目忠实度应在这张表上走高；单篇 73→94 只是机制验证，规模确认靠这张表）。
 
 **P1 尺子至此完整**：①忠实度 + ②排序 + ③报告/趋势 全部落地，下一步是「让它每天跑 + 攒反馈」，反馈够了再进 P2（个性化）。
+
+---
+
+# Phase A · 钉钉内交互投票（A0 走通骨架）
+
+**走单聊互动卡片 + Stream 回调，不走 actionCard URL 回调**：互动卡片的按钮配 `callbackType=STREAM`，点击经持久连接回到 `serve`，无需公网 web 端点接 URL。`createAndDeliver` 投到 `openSpaceId="dtv1.card//IM_ROBOT.{userId}"`（1v1）+ `imRobotOpenDeliverModel{spaceType:IM_ROBOT, robotCode}`（API 形状从 dingtalk-stream-sdk 源码确认）。
+
+**抽 `record_feedback` 让 mark 和回调共用一段写入**（web Claude 点的最关键一笔）：契约一致是**结构上保证**（同一函数），不是靠测试对账（对账测试也加了，防回归）。P2 才能放心统一吃这一个 store。
+
+**契约结构**：`{id:{vote,ts,title,source,tags,url}}`，last-write-wins。回调用 `outTrackId="{date}:{item_id}"` 还原 date+id，从 `{date}.items.json` 取内容快照传给 `record_feedback`——和 mark 路径同一份快照来源。
+
+**卡片更新走 ack 返回值不走单独接口**：handler `return AckMessage.STATUS_OK, {"cardUpdateOptions":..., "userPrivateData":{"cardParamMap":{status:"已记录"}}}` —— 钉钉据 ack 本地更新卡片，省一次 HTTP。
+
+**命门 = 模板变量名/按钮 params 必须和代码对齐**（静默失败）：`cardParamMap` 的 key 必须等于模板变量名（`CARD_VARS=title/url/reason/status`）；两个按钮 params 带 `{vote:up}`/`{vote:down}`。**A0 先投 1 张卡验掉这个未知数**，再 A1 铺开。卡片标题做成 `${title}`→`${url}` 可点链接（web Claude 要求：能点进去读，否则盲投）。
+
+**密钥只从 env**：`DingtalkCardConfig.resolved()` —— client_id/secret 仅 env；template_id/user_id/robot_code env 优先、config 兜底；空 `[channels.dingtalk_card]` 段即可启用（全走 env）。**markdown 推送保留作回退**（A1 跑通后默认关、代码留着）。
+
+**serve 卫生**：剥 `ANTHROPIC_API_KEY`（不调 LLM）；**无 run-lock**（只写 feedback，不碰 seen/digest/pipeline）；SIGINT 优雅退出；`start_forever` 自带重连；handler 包 try/except，单次回调失败不挂服务；聊天消息 handler 打印 senderStaffId（用户发条消息即得 userId）。SDK 类名/topic 已对安装版 0.24.3 introspect 核实。

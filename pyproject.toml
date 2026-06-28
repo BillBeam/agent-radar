@@ -12,7 +12,8 @@ dependencies = [
     "PyYAML>=6.0",
     "feedparser>=6.0",
     "requests>=2.31",
-    "pypdf>=4.0",        # arXiv full-text PDF fallback (deep-read grounding)
+    "pypdf>=4.0",            # arXiv full-text PDF fallback (deep-read grounding)
+    "dingtalk-stream>=0.24", # Phase A: Stream listener for 👍/👎 card callbacks
 ]
 
 [project.optional-dependencies]

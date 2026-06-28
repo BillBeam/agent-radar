@@ -46,11 +46,38 @@ class DingtalkConfig(BaseModel):
     secret: Optional[str] = None       # for 加签 (HMAC-SHA256) security mode
 
 
+class DingtalkCardConfig(BaseModel):
+    """Enterprise-internal-app robot delivering INTERACTIVE cards (👍/👎 → Stream callback).
+    Secrets (client_id/client_secret) are NEVER stored here — env only. The non-secret ids
+    may live in config.toml OR env (env wins). An empty [channels.dingtalk_card] section is
+    enough to enable the channel and pull everything from env."""
+    model_config = ConfigDict(extra="forbid")
+    card_template_id: Optional[str] = None   # built once (API-create preferred) — the 命门
+    user_id: Optional[str] = None            # 1v1 recipient staffId (or captured from a bot message)
+    robot_code: Optional[str] = None         # the robot's RobotCode
+
+    def resolved(self) -> dict:
+        """Merge env over config; client_id/client_secret come ONLY from env."""
+        return {
+            "client_id": os.getenv("DINGTALK_CLIENT_ID"),
+            "client_secret": os.getenv("DINGTALK_CLIENT_SECRET"),
+            "card_template_id": os.getenv("DINGTALK_CARD_TEMPLATE_ID") or self.card_template_id,
+            "user_id": os.getenv("DINGTALK_USER_ID") or self.user_id,
+            "robot_code": os.getenv("DINGTALK_ROBOT_CODE") or self.robot_code,
+        }
+
+    def missing(self, keys: tuple[str, ...]) -> list[str]:
+        """Which of `keys` are still unset after env+config resolution (for friendly errors)."""
+        r = self.resolved()
+        return [k for k in keys if not r.get(k)]
+
+
 class ChannelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     local: bool = True                 # always-on local md archive
     macos: bool = True                 # desktop notification
-    dingtalk: Optional[DingtalkConfig] = None   # enabled iff webhook provided
+    dingtalk: Optional[DingtalkConfig] = None   # enabled iff webhook provided (markdown push)
+    dingtalk_card: Optional[DingtalkCardConfig] = None   # interactive 👍/👎 cards (Phase A)
 
 
 class ModelsConfig(BaseModel):
