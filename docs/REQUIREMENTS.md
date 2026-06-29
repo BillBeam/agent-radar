@@ -34,7 +34,7 @@
 
 ## 四、关注的能力域（决定选题口味，也是 agent 自身要体现的）
 
-抓取打分要偏向这些 agent 工程主题（也是 agent 自身架构尽量逐个命中的能力点）：Agent 编排与架构（任务分解、规划 CoT/ToT、多步推理）、多智能体协作（通信协议、角色分工、冲突消解、共识）、Reflection / Tool Use / Human-in-the-loop、LLMOps（部署、灰度、监控、Token 预算）、可观测性（全链路 Trace、幻觉检测、异常自动恢复）、Eval 框架与「数据-训练-评测」闭环（含 Hard Negative Mining）、RAG（混合检索、重排、知识图谱、上下文窗口管理）、工具接入层（MCP / Function Calling、参数校验与执行安全）、记忆系统（向量库 + 关系型，短期上下文 + 长期个性化记忆）、容器化与隔离。
+抓取打分要偏向这些 agent 工程主题（也是 agent 自身架构尽量逐个命中的能力点）：Agent 编排与架构（任务分解、规划 CoT/ToT、多步推理）、多智能体协作（通信协议、角色分工、冲突消解、共识）、Reflection / Tool Use / Human-in-the-loop、LLMOps（部署、灰度、监控、Token 预算）、可观测性（全链路 Trace、幻觉检测、异常自动恢复）、Eval 框架与「数据-训练-评测」闭环（含 Hard Negative Mining）、RAG（混合检索、重排、知识图谱、上下文窗口管理）、工具接入层（MCP / Function Calling、参数校验与执行安全）、记忆系统（FTS5 + USER.md + LLM 选择，非向量；短期上下文 + 长期个性化记忆）、容器化与隔离。
 
 ## 五、运行机制
 
@@ -71,7 +71,7 @@
 ## 七、当前进度与路线图
 
 - **P0 每日管线** ✅ 已跑通（28 源抓取 → AI 分诊 → 质量门 → 中文详解深读 → 双语 digest → 钉钉精简版 + 本地完整版）
-- **P1 记忆/检索** 🔜 进行中（sqlite+向量 / 本地 BGE-M3 / 混合检索，digest 出现「与上周 X 关联」）
+- **P2 懂你（记忆 + 个性化）** 🔜 下一步（SQLite FTS5 + USER.md + LLM 选择，非向量；对他已会主题降权）
 - **P2 对话式 agent** 📋（项目根 CLAUDE.md 操作手册 + 对话中提取记忆 + 改自己的配置）
 - **P3 skill 自创建 + 周度 evolve + eval 冻结基准** 📋
 - **P4 自指闭环** 📋（把读到的前沿技术 eval-gated 用来升级自己，HITL + git worktree 隔离 A/B + 回归自动回滚）
