@@ -1,7 +1,7 @@
 """Abstract ports — the seams of the hexagon.
 
 Every varying capability (a source type, a delivery channel, a quality rule, a
-pipeline stage, the LLM backend, the memory store) implements one of these and
+pipeline stage, the LLM backend) implements one of these and
 self-registers. Core code depends only on these interfaces, never on a concrete
 adapter — so adding a capability is adding a file, never editing the core.
 """
@@ -82,7 +82,6 @@ class LLMClient(ABC):
         system: Optional[str] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
-        allow_tools: Optional[list[str]] = None,
         timeout: Optional[float] = None,
     ) -> LLMResult:
         ...

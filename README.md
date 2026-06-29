@@ -29,7 +29,7 @@ Agent Radar 把这件事自动化并做到极致：
 | 🎯 **高质量把关** | pointwise rubric 分诊 + 多层质量门 + 反幻觉 grounding，宁缺毋滥 |
 | 🇨🇳 **中文详解** | 不是翻译，是讲懂——对标技术博客精读 / 源码笔记的深度 |
 | 🧩 **可拓展架构** | ports-and-adapters 六边形：加一个源/渠道/规则 = 加一个文件或一行配置，不动核心 |
-| 💰 **零额外计费** | LLM 走 `claude -p` headless + 你的订阅；本地嵌入；不调付费 API |
+| 💰 **零额外计费** | LLM 走 `claude -p` headless + 你的订阅；记忆走本地 SQLite FTS5（无嵌入/向量库）；不调付费 API |
 | 🛡️ **生产级健壮** | 每源熔断、每段降级、原子写、结构化日志 + 全链路 trace、单测 + eval 回归 |
 | 🔁 **自我进化**（规划中） | 对话中改自己的配置/prompt、自创建 skill；把前沿技术 eval-gated 应用到自身 |
 
@@ -100,7 +100,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
 
 ### 运行机制（为什么不额外计费）
 
-`claude -p` 是 Claude Code 的 headless/print 模式。只要环境里**没有设 `ANTHROPIC_API_KEY`** 且 Claude Code 是订阅登录，这些调用就**走订阅额度、不按 API token 计费**。本项目的 LLM 适配器会主动从子进程环境里剥离 `ANTHROPIC_API_KEY`，确保永远不会静默切到 API 计费。嵌入（P1）用本地模型，也零额外成本。
+`claude -p` 是 Claude Code 的 headless/print 模式。只要环境里**没有设 `ANTHROPIC_API_KEY`** 且 Claude Code 是订阅登录，这些调用就**走订阅额度、不按 API token 计费**。本项目的 LLM 适配器会主动从子进程环境里剥离 `ANTHROPIC_API_KEY`，确保永远不会静默切到 API 计费。记忆检索（P2）用本地 SQLite FTS5，无需嵌入/向量库，也零额外成本。
 
 ---
 
@@ -109,7 +109,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | **P0** | 每日管线：28 源抓取 → 分诊 → 质量门 → 中文详解 → 双语 digest → 钉钉+本地 | ✅ 已跑通 |
-| **P1** | 记忆/检索系统（sqlite+vec / 本地 BGE-M3 / 混合检索），digest 出现「与上周 X 关联」 | 🔜 进行中 |
+| **P1** | 记忆/检索系统（SQLite FTS5 · CJK trigram + USER.md + LLM 选择，不向量），digest 出现「与上周 X 关联」 | 🔜 进行中 |
 | **P2** | Face 2 对话式 agent（`CLAUDE.md` 操作手册 + 对话中提取记忆 + 改自己的配置） | 📋 规划 |
 | **P3** | skill 自创建 + 周度 evolve（reflect/discover/metrics）+ eval 冻结基准 | 📋 规划 |
 | **P4** | 自指闭环：把每天读到的前沿技术 eval-gated 用来升级自己（HITL + 隔离 A/B） | 📋 规划 |

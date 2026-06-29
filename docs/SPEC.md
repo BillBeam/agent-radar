@@ -120,21 +120,29 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 
 多层、可组合、可观测：①新鲜度门 ②相关性硬阈值(<6 丢，slow day 少推不降标) ③源加权+噪声拒绝 ④反幻觉 grounding(详解落原文，拉不到降级) ⑤去重 ⑥宁缺毋滥(少则明写) ⑦footer 漏斗(候选 N→过门 K→推送 J)。
 
-## 8. 记忆与理解（P1，开发中 — Memory System：向量库 + 关系型）
+## 8. 记忆与理解（P2，未起 — 文件 + FTS5 + USER.md）
 
-**记忆由 harness 持有、喂给 Claude**（LLM 不长期记忆，harness 记），和 Claude Code 的 CLAUDE.md/记忆机制同源。两类：
-- **内容记忆（过往推送）**：每条推过的条目 + 详解 + 标签 + 日期 → sqlite(push-log/thread) + 向量(本地嵌入)。→ `Recall` stage 让 agent 说「延续上周 X / 与 Y 对比 / Z 主题第 N 篇」，串 thread 追踪进展。
-- **用户记忆（关于用户）**：演化画像（背景、知识水平=英文待提高→中文详解、口味=harness 深度优先、反馈史）。初值用已知信息播种，靠 Face 2 对话 + 反馈演化。存为 markdown 事实文件（人可读、git 友好、对话可编辑）+ sqlite/向量双形态。
+**记忆由 harness 持有、喂给 Claude**（LLM 不长期记忆，harness 记），和 Claude Code 的 CLAUDE.md/`memdir` 记忆机制同源。两类：
+- **内容记忆（过往推送）** = **SQLite + FTS5（CJK trigram，他读中文详解）**：存每条推过的条目 + 详解 + 标签 + 日期，`Recall` stage 让 agent 说「延续上周 X / 与 Y 对比 / Z 主题第 N 篇」，串 thread 追踪进展。**复用现成 `data/digests/{date}.items.json` + `state/seen.json`，不重造**；抄 Hermes `hermes_state.py` 的 FTS5 小规模做法。
+- **用户记忆（关于用户）** = **`USER.md`**（人可读、git 友好、对话可编辑）：演化画像（背景、知识水平=英文待提高→中文详解、口味=harness 深度优先、**已会清单**、反馈史）。初值用已知信息播种，靠 Face 2 对话 + 反馈演化；召回靠 **LLM 选择/注入**——抄 CC `memdir` + `findRelevantMemories`（Sonnet 读「文件名+description」manifest 选相关文件，**非向量相似度**）。
 
-**起步选型（JIT 调研时刷新）**：`sqlite + sqlite-vec`（关系型+向量同库一个文件）+ 本地 **BGE-M3** 嵌入 + **Contextual Retrieval + 混合 BM25+dense+RRF+重排**；无 ML 依赖时先 BM25，adapter 边界无痛升级。新增 `radar/memory/`(relational/vector/profile) + `recall`/`remember` stage。
+**选型 = SQLite + FTS5 + `USER.md` + LLM 选择，不上向量。** 新增 `radar/memory/`(relational/profile) + `recall`/`remember` stage；记忆端口 adapter 边界保留——真要嵌入再加一个 vector adapter，**默认不上**。三条理由（把反 cargo-cult 编进蓝图、防漂回向量栈）：
+1. **两个最相关参照都不用向量做记忆**：CC 用 LLM 选文件（`src/memdir/findRelevantMemories.ts`，全库 grep `embedding|cosine|knn|sqlite-vec` 对记忆零命中）；Hermes 用 FTS5/BM25 + trigram（`hermes_state.py:291/320`）。
+2. **Radar 记忆规模小**（每天 ~10 条推送、单用户画像），FTS5/BM25 + LLM 选择绰绰有余，向量库是过度工程。
+3. **RAG 对 BeamBill 本就不新**（北极星明列 RAG / context-engineering / IMA 是他已掌握的）——为"像个先进 RAG 系统"而建 = 违背"对他精确/对他新"的北极星。
 
-## 9. 自我进化（P2–P4，规划）
+**「对他新」要求（B 阶实现，本轮只写要求、不改运行逻辑）**：rerank 的"新颖"判据要从"**对领域新**"细化为"**对 BeamBill 新**"——读 `USER.md` 的已会清单对**他已会主题降权**（`prompts/rerank.md` 的改动是 B 阶的事）。**验收**：digest 里能看出对已会主题（RAG / context-engineering / harness 构建 / brain-hands 解耦 / IMA）的降权——已会的沉下去、真正对他新的浮上来。
 
-三个层级：
-- **能力级（P2–P3）**：Face 2 对话中**改自己的配置/prompt**、**提取记忆**、**自创建/编辑 skill 与 adapter**。靠项目根 `CLAUDE.md` 操作手册（讨论风格 + 记忆提取协议 + 自我迭代协议 + skill 创建协议 + 护栏）让「项目目录里的一个 Claude Code 会话」成为 radar 的对话大脑。
-- **参数级（P3）**：`radar/evolve/` 周度 reflect（据反馈调源权重/话题侧重/阈值）+ discover（从深读正文挖新高信号源、验活后提议加进 sources.yaml）+ metrics（自评估指标）。
-- **架构/技术级（P4，自指闭环）★最强**：**把每天调研到的前沿技术用来升级自己**。五步（eval 门控 + HITL，安全可控）：① 分诊时标 `self_applicable`+`target_component`（taxonomy 话题=radar 自己的组件）② 入 `data/self_improve/backlog.jsonl` ③ agent 读自己的 `radar/` 代码产出改动 diff ④ **git worktree 隔离**跑改动，用**冻结基准集**(过往候选池 + 用户 👍/👎 + faithfulness 标注)做 **A/B** ⑤ 过 eval + 护栏 → diff 进周报让用户拍板 → commit；回归自动 rollback。护栏：eval 客观门控 + worktree 隔离 + git 可回滚 + HITL + 自我修改代码必须先过 `pytest`+eval 才允许 commit。
+## 9. 自我进化（E1 近期 / E2 远期可选）
 
+**能力级（P2–P3）**：Face 2 对话中**改自己的配置/prompt**、**提取记忆**、**自创建/编辑 skill 与 adapter**。靠项目根 `CLAUDE.md` 操作手册（讨论风格 + 记忆提取协议 + 自我迭代协议 + skill 创建协议 + 护栏）让「项目目录里的一个 Claude Code 会话」成为 radar 的对话大脑。
+
+自指闭环——**把每天调研到的前沿技术用来升级自己**——拆成 E1（先做）+ E2（远期可选）：
+
+- **E1 · 数据级 reviewer（近期、低风险、即时价值）★先做**：一个 Hermes `background_review.py` 式的 reviewer——读 `prompts/triage.md` **已经在 emit** 的 `self_applicable`+`target_component` 标注 + `data/eval/{date}.json` 的 eval 结果 → 提一个 **prompt/config/blocklist/weight 的 diff**（含原"参数级"的调源权重/话题侧重/阈值 + 从深读正文 discover 新高信号源）→ **周报给用户拍板（HITL）→ 应用**。**这是「已有标注钩子 + 已有 eval 判据」接成闭环，不碰代码、不需向量、不需 worktree。** 安全模式抄两家：自维护 reviewer 用**极窄工具白名单**（CC `compact.ts:1125` 压缩 agent 拒绝全部工具；Hermes `background_review.py:459` 只白名单 memory+skills）。
+- **E2 · 代码级自指闭环（远期、可选、强护栏）⚠最后做、非必须**：agent 读自己的 `radar/` 代码产出改动 diff → **git worktree 隔离**跑改动，用**冻结基准集**(过往候选池 + 用户 👍/👎 + faithfulness 标注)做 **A/B** → 过 eval + 护栏 → diff 进周报让用户拍板 → commit；回归自动 rollback。护栏：eval 客观门控 + worktree 隔离 + git 可回滚 + HITL + 自我修改代码必须先过 `pytest`+eval 才允许 commit。**注**：Hermes 自己的自进化也**只到 skill/memory 数据层、不改引擎代码**（`memory_tool.py`/`skill_manager_tool.py` 路径围栏）——E2 是更大的赌注，**别让它阻塞 E1 的即时价值**。
+
+> **优先级红线**：`P1 eval 闭环断裂`——尺子已建、却**无人消费** eval 结果——是"系统会不会**自我变好**"的存亡问题；**E1 正是接这个闭环**，应在 E2 之前做。
 > 飞轮：调研前沿 → 标自相关 → eval 验证 → 升级自己 → 自己变强 → 调研更准更深 → ……
 
 ## 10. 技术选型（起步基线/方向锚，JIT 调研时刷新到当下最前沿）
@@ -145,27 +153,28 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 | 编排 | routing(按复杂度) + orchestrator-worker(独立条目并行) + evaluator-optimizer | Agent 编排/多智能体 |
 | 分诊 | pointwise rubric + 边界项 self-consistency + LLM-judge 去偏 | 意图识别/Eval |
 | 深读 grounding | evaluator-optimizer/Reflexion + RAGAS 式 faithfulness | 幻觉检测 |
-| 内容记忆 | MemGPT/Letta 自编辑记忆块 + Generative-Agents 反思 + 时序 thread | 短期上下文+长期记忆 |
-| 检索 | Contextual Retrieval + 混合 BM25+dense+RRF + 重排 | 混合检索/Re-ranking |
-| 本地嵌入/库 | BGE-M3 + sqlite-vec | 向量库+关系型 |
+| 记忆 | SQLite FTS5（CJK trigram）存历史推送 + USER.md 自编辑画像（CC memdir / Hermes 同源）+ 时序 thread | 短期上下文+长期记忆 |
+| 检索/召回 | FTS5 BM25 关键词 + LLM 选择相关文件（非向量相似度） | 关键词检索/记忆召回 |
 | 自我修改 | Voyager 式技能库 + Gödel-agent 自省 + Alita 按需生成工具 | Reflection/Tool Use |
 | 自评估 | reference-free(faithfulness/relevance) + trajectory/outcome + hard-negative mining | Hard Negative Mining |
 
-**故意不用**（场景不需要、可 defend）：全程多智能体(15x token)、重型 eval 平台(DeepEval/Phoenix)、重型知识图谱、本地大模型。
+**故意不用**（场景不需要、可 defend）：**向量嵌入 / RAG 运行时**（记忆规模小、FTS5+LLM 选择够用、RAG 对他不新）、全程多智能体(15x token)、重型 eval 平台(DeepEval/Phoenix)、重型知识图谱、本地大模型。
 
 ## 11. 工程健壮性（生产级，已部分内建）
 
 已有：每源熔断、每段降级、原子写、结构化日志 + trace、pydantic config 校验、单测、proxy-safe HTTP、投递幂等 + seen 去重。
 **待补（P0 收尾）**：run-lock 并发锁、token 预算强制、`--mode status/doctor` 完善、钉钉失败告警、schema 迁移、备份/恢复、数据保留裁剪、WebFetch SSRF 防护。
+**待补（观测/可靠性，路线图待办）**：per-LLM-call trace（prompt 级成本/延迟可观测，无人值守日跑需要）、deepread item 级 checkpoint（崩溃重跑跳过已完成项；忠实度 eval 已有、deepread 还没有）。
 
 ## 12. 路线图与当前进度
 
-- **P0 每日管线** ✅ 已跑通（fetch→triage→quality_gate→deepread→synthesize→deliver，28 源，中文详解，钉钉+本地）
-- **P1 记忆/检索** 🔜 进行中（sqlite+vec/BGE-M3/混合检索，Recall/Remember，digest 关联）
-- **P2 Face 2 对话** 📋（CLAUDE.md 操作手册 + 记忆提取 + config 自我迭代）
-- **P3 skill 自创建 + evolve + eval** 📋（周度反思/挖源/指标 + 冻结基准 + A/B harness）
-- **P4 自指闭环** 📋（自相关→backlog→自改 diff→worktree A/B→HITL 上线）
+- **P0 每日管线** ✅ 已跑通（fetch→triage→quality_gate→rerank→deepread→synthesize→deliver，28 源，中文详解，钉钉+本地）
+- **P0-H 加固 + P1 尺子（eval）** ✅ 已完成（D/C/B/A/E 加固 + 忠实度/排序 eval + 报告/趋势；Phase A 钉钉投票收口）
+- **P2 懂你（记忆 + 个性化）** 🔜 下一步（**SQLite FTS5 + USER.md + LLM 选择**，非向量；Recall/Remember；**对他已会主题降权 = 破"全都重要"**，digest 出现「与上周 X 关联」）
+- **P3 讲到极致** 📋（批判层诚实标可跳过 + 深度一致 + 正文抓全 + 扩覆盖）
+- **P4 会聊 + 自进化** 📋（对话深挖；**E1 数据级 reviewer**：自相关标注+eval→配置/prompt diff→周报 HITL〔先做、窄白名单〕；**E2 代码级自指闭环**：worktree A/B→HITL〔远期可选、强护栏〕）
 
+> **优先级红线**：`P1 eval 闭环断裂`——尺子已建却无人消费 eval 结果，**E1 接上它**才让系统真的自我变好。
 每阶段都可独立交付、可演示。每个组件开工前先做 JIT 前沿调研。
 
 ## 13. 协作方式

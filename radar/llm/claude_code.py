@@ -74,7 +74,6 @@ class ClaudeCodeLLM(LLMClient):
         system: Optional[str] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
-        allow_tools: Optional[list[str]] = None,
         timeout: Optional[float] = None,
         retries: int = 3,
     ) -> LLMResult:

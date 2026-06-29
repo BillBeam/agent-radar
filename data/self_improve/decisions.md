@@ -220,3 +220,19 @@
 **loop 绑定导入能活**：loop 上下文 `${loop.x}` + `listData` 结构化绑定，导入后**不被搭建器清空**（与全局 `${markdown}` 被清相反）→ loop 卡导入即用、不必 GUI 手绑。
 
 **构建失败的血泪（手拼 DSL 必读）**：① **样式属性给非法枚举值会「卡片构建失败」**（`bold/size/color/autoWidth` 乱设、把 dict 型 `color` 写成裸字符串）；② **嵌套 Grid 组合也会挂**。安全做法 = **复刻验证过的结构**（Loop 直接放 `[BaseText, BaseText, SingleButton, SingleButton]`，不套 Grid）、**只改 text + actionId**、样式保留原始合法值，再**逐个属性试加**。功能先跑通，样式后逐步精修。
+
+---
+
+# SPEC 修正轮 · 三处纠偏 + 两处诚实债落进蓝图（设计层，2026-06-29）
+
+**为什么单独一轮**：上一轮独立 CC 会话产出 `docs/ARCHITECTURE_AUDIT.md`（网页 Claude 背书），点名当前 SPEC 的记忆选型是路线图最明确的 cargo-cult。Phase A 收口后本该进 B（P2 冷启动），但若照现行 SPEC（向量-RAG）建 B 就把审计白做——**先改图纸、再照图施工**。本轮只动设计文档 + 两处微小代码清理，**不实现 B / 不实现 E**。
+
+**① 记忆选型：删向量-RAG → SQLite FTS5（CJK trigram）+ USER.md + LLM 选择**（SPEC §8/§10/§12 + README + CLAUDE §6）。三条理由编进蓝图防漂回：(a) 两个最相关参照都不用向量做记忆——**落定前重读本地最新源码复核**：CC 用 LLM 选文件（`src/memdir/findRelevantMemories.ts:77-141` Sonnet 读「文件名+description」manifest 返回文件名，`memoryScan.ts:84-94`；全库 grep `embedding|cosine|knn|sqlite-vec` 对记忆零命中），Hermes 用 FTS5/BM25+trigram（`hermes_state.py:291/320/2177`，commit `87e5b2fae` 2026-05-28，32 天够新）；(b) Radar 记忆规模小（每天 ~10 条、单用户画像），FTS5 + LLM 选择够用；(c) RAG 对 BeamBill 本就不新（北极星明列 RAG/context-engineering/IMA 是他已会的）——为"像个先进 RAG"而建违背北极星。adapter 边界保留，真要嵌入再加 vector adapter、默认不上。
+
+**② 「对他新」升为 B 的一等验收**（CLAUDE §1/§4 + PHASES P2 + SPEC §8）。北极星早写了"精确 = 重要性 + 对他新"，但只是目标、零落地。本轮把它写成**验收标准**：手填「已会清单」必须**直接接进 rerank 做"对他已会主题降权"**（否则记忆建好也不改变推送 = 审计点名的失败模式）；验收 = digest 能看出对已会主题（RAG/context-engineering/harness 构建/brain-hands 解耦/IMA）降权。rerank 实现是 B 阶的事，本轮只写要求、不改运行逻辑。
+
+**③ E 拆 E1（数据级近期）+ E2（代码级远期可选）**（SPEC §9 + CLAUDE §4 + PHASES P4）。E1 = Hermes `background_review.py` 式 reviewer，读已 emit 的 `self_applicable`/`target_component` 标注 + `data/eval/` 结果 → 提 prompt/config/blocklist/weight diff → 周报 HITL；**已有钩子 + 已有判据接成闭环，不碰代码、不需向量/worktree**，安全靠极窄工具白名单（CC `compact.ts:1125` 拒绝全部工具 / Hermes `background_review.py:459` 只白名单 memory+skills）。E2 = 原 P4 代码级自指闭环，标"最后做、非必须、强护栏"（worktree + 冻结基准 A/B + pytest+eval 双门 + HITL + rollback）；注明 Hermes 自进化也只到 skill/memory 数据层、不改引擎代码（`memory_tool.py:58`/`skill_manager_tool.py:108`）——E2 别阻塞 E1。优先级：`P1 eval 闭环断裂`（尺子已建却无人消费）= 自我变好的存亡问题，E1 正是接它。
+
+**④ 清两处诚实债**（代码）：删 `radar/core/ports.py` 的 `LLMClient.complete` `allow_tools` 死参数（+ 实现 `radar/llm/claude_code.py`，grep 确认全仓无 caller）；删 `ports.py` 模块 docstring 里「the memory store」那个**不存在**的端口承诺（记忆端口随①重新定义、本轮不实现）。`pytest` 89 绿。
+
+**记进路线图待办（本轮不实现）**：per-LLM-call trace（prompt 级成本/延迟观测）、deepread item 级 checkpoint（崩溃续跑）、README 整张 P0–P4 表的 P 错位漂移（本轮只去了向量措辞、没动表号，避免半改出双 P2 破表）。
