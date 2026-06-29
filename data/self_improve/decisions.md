@@ -208,3 +208,15 @@
 **解法（唯一可行顺序）：新建模板 → 导入（按钮等结构）→ 在 GUI 里手绑变量 → 再首次发布**。把绑定包进那唯一一次发布里，绕开「发布后不能再发布」。`c35470de` 就是这么建成的。⚠️ 教训：**钉钉高级版卡片模板基本是「一次性」的——发布前必须把内容、绑定全部弄对**；要改就新建。
 
 **outTrackId nonce（`DINGTALK_OUTTRACK_NONCE`，opt-in）**：钉钉同 outTrackId 复用不刷新（doc：换 templateId/cardData 要换全新 outTrackId）。加可选 nonce → `{date}:{item_id}:{nonce}` 强制新卡实例，便于复投/改票/换模板测试；`parse_card_callback` 按 `:` 切片取前两段，**自动剥离 nonce**（item_id 不受污染）。生产默认不带 nonce（稳定 id，每天新日期天然新鲜）。
+
+---
+
+# Phase A1+ · N 张卡 → 一张列表卡（用户反馈驱动重设计）
+
+**为什么**：用户看真投递后指出两个真问题——① **顺序不保证**（N 条独立异步消息，钉钉不保证到达序）；② **廉价感**（N 张几乎一样的卡刷屏 + 全宽堆叠按钮）。结论：用 N 条消息表达一个有序列表 = 把顺序交给网络。改成**一张列表卡**（钉钉「循环渲染容器」Loop）：一条消息 → 顺序天然保证、不刷屏。真跑验通（模板 `b9ac5ebf`，2026-06-29）：1 卡 6 行 → 点某行 👎 → `feedback` 写入、与 `radar mark` 逐键一致。
+
+**per-row 投票走 `actionId`（关键机制）**：循环内按钮的 `${loop.x}` **在 `actionId` 解析、在 `params` 不解析**（实测：回调 `cardPrivateData.actionIds=["down_<id>"]`、`params:{}`）。所以每行 👍/👎 的 `actionId=${loop.up_token}` / `${loop.down_token}`，token = `up_<id>`/`down_<id>`（服务端 `build_items` 预拼）。`parse_card_callback` 新增列表路径：`actionId` 拆 vote+item_id，date 从 `outTrackId`（`{date}:list`）；老 per-item 路径保留兼容。`loopArray` 变量 `items`（schema 定义每行字段）→ `cardData.cardParamMap.items` 传 **JSON 串**。
+
+**loop 绑定导入能活**：loop 上下文 `${loop.x}` + `listData` 结构化绑定，导入后**不被搭建器清空**（与全局 `${markdown}` 被清相反）→ loop 卡导入即用、不必 GUI 手绑。
+
+**构建失败的血泪（手拼 DSL 必读）**：① **样式属性给非法枚举值会「卡片构建失败」**（`bold/size/color/autoWidth` 乱设、把 dict 型 `color` 写成裸字符串）；② **嵌套 Grid 组合也会挂**。安全做法 = **复刻验证过的结构**（Loop 直接放 `[BaseText, BaseText, SingleButton, SingleButton]`，不套 Grid）、**只改 text + actionId**、样式保留原始合法值，再**逐个属性试加**。功能先跑通，样式后逐步精修。

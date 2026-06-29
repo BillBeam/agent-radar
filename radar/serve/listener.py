@@ -60,23 +60,45 @@ def _extract_vote(content) -> Optional[str]:
     return None
 
 
+def _card_private(content) -> dict:
+    """content (a JSON STRING for DingTalk) → its cardPrivateData dict {actionIds, params}, or {}."""
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except (ValueError, TypeError):
+            return {}
+    return (content.get("cardPrivateData") or {}) if isinstance(content, dict) else {}
+
+
 def parse_card_callback(data: dict) -> Optional[dict]:
-    """The platform→core boundary: a card actionCallback payload → an **InboundVote**
-    {date, item_id, vote, user_id} (see _INBOUND_KEYS), or None if it's not a 👍/👎.
-    outTrackId is '{date}:{item_id}'; the vote is recovered by _extract_vote (robust to the
-    request/value button shape). Accepts both raw frame keys and the normalized ones from
-    _normalize_callback (outTrackId/content/userId). This is the ONLY DingTalk-aware function."""
+    """The platform→core boundary → an **InboundVote** {date, item_id, vote, user_id} (see
+    _INBOUND_KEYS), or None. Two card shapes, in priority order:
+    • LIST card (current): the clicked row's button actionId is `up_<id>` / `down_<id>` — vote and
+      item_id ride in the actionId (verified: `${loop.x}` resolves in a loop button's actionId but
+      NOT its params); date is outTrackId's first segment ('{date}:list').
+    • PER-ITEM card (back-compat, old cards still in chat): outTrackId='{date}:{item_id}' (+ optional
+      nonce), vote recovered by _extract_vote.
+    Accepts raw frame keys or the normalized ones from _normalize_callback. The ONLY DingTalk-aware code."""
     if not isinstance(data, dict):
         return None
     out_track_id = data.get("outTrackId") or ""
-    if ":" not in out_track_id:
-        return None
-    parts = out_track_id.split(":")          # '{date}:{item_id}' (+ optional ':{nonce}' from re-delivery)
-    date, item_id = parts[0], parts[1]
-    vote = _extract_vote(data.get("content"))
-    if vote not in _VOTES:
-        return None
-    return {"date": date, "item_id": item_id, "vote": vote, "user_id": data.get("userId")}
+    user_id = data.get("userId")
+    cpd = _card_private(data.get("content"))
+    # list card: actionId carries vote + item_id as `up_<id>` / `down_<id>`
+    for aid in (cpd.get("actionIds") or []):
+        if isinstance(aid, str):
+            for v in _VOTES:
+                if aid.startswith(v + "_") and len(aid) > len(v) + 1:
+                    return {"date": out_track_id.split(":", 1)[0], "item_id": aid[len(v) + 1:],
+                            "vote": v, "user_id": user_id}
+    # per-item card: outTrackId '{date}:{item_id}' (+ optional nonce), vote via _extract_vote
+    if ":" in out_track_id:
+        parts = out_track_id.split(":")
+        if len(parts) >= 2 and parts[1] != "list":
+            vote = _extract_vote(data.get("content"))
+            if vote in _VOTES:
+                return {"date": parts[0], "item_id": parts[1], "vote": vote, "user_id": user_id}
+    return None
 
 
 def _normalize_callback(raw: dict, sdk) -> dict:

@@ -14,37 +14,43 @@ def _item(**kw):
     return Item(**base)
 
 
-# ---------------- outbound: createAndDeliver body ----------------
-def test_build_card_param_map():
-    from radar.channels.dingtalk_card import build_card_param_map
-    m = build_card_param_map(_item(id="abc", title="Hi", reason="一句话理由"), 3, "🆕")
-    assert m == {"markdown": "[3] 🆕 Hi — 一句话理由"}   # plain-text compact line: [N] marker title — reason
-    assert all(isinstance(v, str) for v in m.values())        # cardParamMap requires string values
-    # reason is clipped so the card stays a one/two-line scan
-    long = build_card_param_map(_item(title="T", reason="理" * 200), 1, "📚")["markdown"]
-    assert long.startswith("[1] 📚 T — ") and long.endswith("…") and len(long) < 80
+# ---------------- outbound: ONE list card (Loop rows) ----------------
+def test_build_items():
+    from datetime import datetime, timezone
+    from radar.channels.dingtalk_card import build_items
+    dt = datetime(2026, 6, 26, tzinfo=timezone.utc)
+    a = _item(id="a", published_at=dt, title="Hi", reason="一句话理由", explain_zh="详解")   # 🆕 deep-read
+    b = _item(id="b", published_at=dt, explain_zh=None)                                       # not deep-read → no row
+    c = _item(id="c", published_at=None, title="T2", reason="r2", explain_zh="详解")          # 📚 deep-read
+    rows = build_items(Digest(date="2026-06-26", items=[a, b, c]))
+    assert [r["num"] for r in rows] == ["1", "3"]                       # full-list [N], non-contiguous
+    assert [r["marker"] for r in rows] == ["🆕", "📚"]
+    # per-row vote tokens carry vote+item_id back via the button actionId
+    assert rows[0] == {"num": "1", "marker": "🆕", "title": "Hi", "reason": "一句话理由",
+                       "up_token": "up_a", "down_token": "down_a"}
+    assert all(isinstance(v, str) for r in rows for v in r.values())    # cardParamMap rows are all strings
 
 
-def test_build_send_request(monkeypatch):
-    from radar.channels.dingtalk_card import build_send_request
-    monkeypatch.delenv("DINGTALK_OUTTRACK_NONCE", raising=False)   # default: stable outTrackId
-    body = build_send_request("2026-06-28", _item(id="abc", title="Hi", reason="理由"), 2, "🆕",
-                              {"card_template_id": "tpl-uuid.schema", "user_id": "U123", "robot_code": "RC"})
-    assert body["cardTemplateId"] == "tpl-uuid.schema"        # app-bound template — the only Stream path
-    assert body["outTrackId"] == "2026-06-28:abc"             # ties the click back to the item
-    assert body["callbackType"] == "STREAM"                   # → callback reaches /v1.0/card/instances/callback
-    assert body["cardData"]["cardParamMap"]["markdown"] == "[2] 🆕 Hi — 理由"   # [N]+marker+title+reason
-    assert body["imRobotOpenDeliverModel"] == {"spaceType": "IM_ROBOT", "robotCode": "RC"}  # uppercase
-    assert body["openSpaceId"] == "dtv1.card//im_robot.U123"  # LOWERCASE im_robot (per DingTalk codegen)
+def test_build_list_request(monkeypatch):
+    from radar.channels.dingtalk_card import build_list_request
+    monkeypatch.delenv("DINGTALK_OUTTRACK_NONCE", raising=False)        # default: stable outTrackId
+    rows = [{"num": "1", "marker": "🆕", "title": "Hi", "reason": "r", "up_token": "up_a", "down_token": "down_a"}]
+    body = build_list_request("2026-06-28", rows,
+                              {"card_template_id": "tpl.schema", "user_id": "U123", "robot_code": "RC"})
+    assert body["cardTemplateId"] == "tpl.schema"
+    assert body["outTrackId"] == "2026-06-28:list"                      # ONE card for the whole digest
+    assert body["callbackType"] == "STREAM"
+    assert json.loads(body["cardData"]["cardParamMap"]["items"]) == rows   # items is a JSON STRING (loopArray)
+    assert body["imRobotOpenDeliverModel"] == {"spaceType": "IM_ROBOT", "robotCode": "RC"}
+    assert body["openSpaceId"] == "dtv1.card//im_robot.U123"            # LOWERCASE im_robot
     assert body["userId"] == "U123" and body["userIdType"] == 1
 
 
 def test_outtrack_nonce_forces_fresh_instance(monkeypatch):
-    from radar.channels.dingtalk_card import build_send_request
-    monkeypatch.setenv("DINGTALK_OUTTRACK_NONCE", "demo1")        # opt-in: a new card instead of reusing
-    body = build_send_request("2026-06-28", _item(id="abc"), 1, "🆕",
-                              {"card_template_id": "t", "user_id": "U", "robot_code": "R"})
-    assert body["outTrackId"] == "2026-06-28:abc:demo1"
+    from radar.channels.dingtalk_card import build_list_request
+    monkeypatch.setenv("DINGTALK_OUTTRACK_NONCE", "demo1")             # opt-in: a new card instead of reusing
+    body = build_list_request("2026-06-28", [], {"card_template_id": "t", "user_id": "U", "robot_code": "R"})
+    assert body["outTrackId"] == "2026-06-28:list:demo1"
 
 
 def test_item_numbering_matches_brief():
@@ -114,6 +120,22 @@ def test_parse_card_callback_value_shapes():
     assert parse_card_callback({"outTrackId": "d:i", "content": "garbage"}) is None
     assert parse_card_callback({}) is None
     assert parse_card_callback(None) is None
+
+
+def test_parse_list_card_actionid():
+    """LIST card: the clicked row's button actionId is `up_<id>` / `down_<id>` — vote + item_id ride
+    in the actionId (params don't resolve ${loop.x}); date comes from outTrackId's first segment."""
+    from radar.serve.listener import parse_card_callback
+    s = json.dumps({"cardPrivateData": {"actionIds": ["up_abc123"], "params": {}}})
+    assert parse_card_callback({"outTrackId": "2026-06-26:list", "userId": "U9", "content": s}) == \
+        {"date": "2026-06-26", "item_id": "abc123", "vote": "up", "user_id": "U9"}
+    # 👎 + an outTrackId nonce; item_id keeps its own underscores intact
+    assert parse_card_callback({"outTrackId": "2026-06-26:list:demo",
+                                "content": {"cardPrivateData": {"actionIds": ["down_x_y"]}}}) == \
+        {"date": "2026-06-26", "item_id": "x_y", "vote": "down", "user_id": None}
+    # a bare "up" (old per-item actionId) must NOT be mistaken for the list shape
+    assert parse_card_callback({"outTrackId": "2026-06-26:list",
+                                "content": {"cardPrivateData": {"actionIds": ["up"]}}}) is None
 
 
 def test_inbound_vote_contract():

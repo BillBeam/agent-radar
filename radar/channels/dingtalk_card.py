@@ -1,30 +1,22 @@
-"""DingTalk interactive-card channel — per-item 👍/👎 voting cards (Phase A).
+"""DingTalk interactive-card channel — ONE list card per digest (Phase A1 redesign).
 
-Delivers ONE compact card per deep-read item to the user 1-on-1 via the robot. A 👍/👎 tap fires a
-`request` callback that — and this is the whole point — routes to the **Stream** long connection
-(caught by `radar --mode serve`), which writes feedback through the SAME `record_feedback` as
-`radar mark`. This card is the **voting layer**; the markdown `dingtalk` channel stays on as the
-**reading layer** (clickable links + full 详解). They line up 1:1 via the `[N]` number.
-Secrets come ONLY from env. No proxy (DingTalk is domestic).
+Delivers a SINGLE interactive card whose Loop renders one row per deep-read item:
+`[N] 🆕/📚 + bold Chinese reason + small title + compact 👍/👎`. One message ⇒ order is
+guaranteed and the chat isn't spammed with N separate cards. The per-row vote travels in each
+button's **actionId** as `up_<id>` / `down_<id>` — verified on DingTalk: `${loop.x}` resolves in
+a loop button's actionId (the callback returns it in `cardPrivateData.actionIds`), but NOT in its
+params. `serve` splits that token back into vote + item_id. The markdown `dingtalk` channel stays
+as the reading layer; the two line up by `[N]`. Secrets come ONLY from env. No proxy (domestic).
 
-API: POST {OAPI}/v1.0/card/instances/createAndDeliver  (卡片平台·创建并投递，高级版)
-  body: cardTemplateId = a template BUILT IN open-dev.dingtalk.com/fe/card AND associated with THIS
-        app at creation time (ends in `.schema`) — the only path whose request-button callback
-        reaches Stream; the old robot interactiveCards/send route black-holes the callback (HTTP).
-        + callbackType="STREAM"  → callback lands on /v1.0/card/instances/callback (registered in serve)
-        + cardData.cardParamMap  → fills the template's ONE `markdown` variable (string, plain text)
-        + openSpaceId="dtv1.card//im_robot.{userId}" (LOWERCASE) + imRobotOpenDeliverModel{robotCode}
-        + outTrackId="{date}:{id}" → ties the click back to the item
-
-The template var name MUST match cardParamMap's key (`markdown`) exactly, and its two buttons must be
-`request` actions carrying params {"vote":"up"/"down"} — a silent-failure contract (decisions.md).
-The `markdown` variable carries a PLAIN-TEXT compact line `[N] 🆕/📚 Title — reason` (no clickable
-link: the template's BaseText renders plain text; the markdown brief is the reading layer).
+Template (card-builder, im/3.0.0): a `loopArray` variable `items` (schema: num/marker/title/
+reason/up_token/down_token) drives a Loop; each row binds `${loop.<field>}`. Loop-context
+bindings survive import (unlike a global `${var}`, which the builder clears) — so the template is
+built+published once, no GUI re-bind. cardParamMap values must be strings ⇒ `items` is a JSON string.
 """
 from __future__ import annotations
 
+import json
 import os
-import time
 from typing import Any
 
 import requests
@@ -38,36 +30,62 @@ _TOKEN_URL = f"{_OAPI}/v1.0/oauth2/accessToken"
 _SEND_URL = f"{_OAPI}/v1.0/card/instances/createAndDeliver"
 _DEGRADE_PREFIX = "（原文"   # deepread's "no body" marker — skip those
 _TITLE_MAX = 80
-_REASON_MAX = 60
+_REASON_MAX = 70
 
 
 def _clip(s: str | None, n: int) -> str:
-    """Trim+cap to n chars with an ellipsis — keep the card a one/two-line scan."""
     s = (s or "").strip()
     return (s[: n - 1] + "…") if len(s) > n else s
 
 
-def build_card_param_map(item: Item, num: int, marker: str) -> dict:
-    """The template's `markdown` variable value (string): the compact voting line
-    `[N] 🆕/📚 Title — reason`. [N] = the item's number in the canonical display order (same as the
-    brief); marker = 🆕 (today-new) / 📚 (backfill). Plain text, kept short (decisions.md: no
-    clickable link — that lives in the markdown reading layer)."""
-    body = f"[{num}] {marker} {_clip(item.title, _TITLE_MAX)}"
-    reason = _clip(item.reason, _REASON_MAX)
-    if reason:
-        body += f" — {reason}"
-    return {"markdown": body}
+def _canonical_order(items: list[Item]) -> list[Item]:
+    """Mirror synthesize.py's display order (fresh→backfill) WITHOUT importing/altering synthesize,
+    so a row's [N] equals the brief's. Within each group input order is preserved."""
+    fresh = [it for it in items if it.published_at is not None]
+    backfill = [it for it in items if it.published_at is None]
+    return fresh + backfill
 
 
-def build_send_request(date: str, item: Item, num: int, marker: str, creds: dict) -> dict:
-    """Body for /v1.0/card/instances/createAndDeliver (1v1 robot push, STREAM callback).
-    outTrackId={date}:{id} ties a click back to the item; the 👍/👎 request buttons live in the
-    template (params {"vote": up/down}) and fire the Stream callback. Field shapes verified against
-    DingTalk's own createAndDeliver codegen — note openSpaceId uses LOWERCASE `im_robot` while
-    imRobotOpenDeliverModel.spaceType is UPPERCASE `IM_ROBOT` (silent-fail trap)."""
+def item_numbering(items: list[Item]) -> dict:
+    """{item.id: (N, marker)} — N is the 1-based position in canonical order, marker 🆕/📚. Built
+    over the FULL list so rows line up 1:1 with the brief even though deep-read items are a subset."""
+    return {it.id: (n, "🆕" if it.published_at is not None else "📚")
+            for n, it in enumerate(_canonical_order(items), 1)}
+
+
+def deep_read_items(digest: Digest) -> list[Item]:
+    """Items worth a row: those with a real 详解 (skip the degrade marker)."""
+    return [it for it in digest.items
+            if it.explain_zh and not it.explain_zh.startswith(_DEGRADE_PREFIX)]
+
+
+def build_items(digest: Digest) -> list[dict]:
+    """The list card's rows — one per deep-read item. [N]/marker over the FULL list (== the brief);
+    vote tokens (`up_<id>` / `down_<id>`) are pre-computed so each row button's actionId carries
+    vote+item_id back. All values are strings (cardParamMap requires strings)."""
+    numbering = item_numbering(digest.items)
+    rows = []
+    for it in deep_read_items(digest):
+        num, marker = numbering.get(it.id, (0, "🆕"))
+        rows.append({
+            "num": str(num),
+            "marker": marker,
+            "title": _clip(it.title, _TITLE_MAX),
+            "reason": _clip(it.reason, _REASON_MAX),
+            "up_token": f"up_{it.id}",
+            "down_token": f"down_{it.id}",
+        })
+    return rows
+
+
+def build_list_request(date: str, rows: list[dict], creds: dict) -> dict:
+    """Body for /v1.0/card/instances/createAndDeliver — ONE list card. cardParamMap.items is the
+    JSON-string of the rows (loopArray). outTrackId={date}:list (the whole digest = one card; the
+    per-row id comes from the clicked button's actionId, not outTrackId). Optional nonce forces a
+    fresh instance for re-delivery/testing."""
     uid = creds["user_id"]
-    out_track = f"{date}:{item.id}"
-    nonce = os.getenv("DINGTALK_OUTTRACK_NONCE")   # opt-in: force a fresh card instance (re-deliver/re-test)
+    out_track = f"{date}:list"
+    nonce = os.getenv("DINGTALK_OUTTRACK_NONCE")
     if nonce:
         out_track += f":{nonce}"
     return {
@@ -76,41 +94,16 @@ def build_send_request(date: str, item: Item, num: int, marker: str, creds: dict
         "cardTemplateId": creds.get("card_template_id"),
         "outTrackId": out_track,
         "callbackType": "STREAM",
-        "cardData": {"cardParamMap": build_card_param_map(item, num, marker)},
+        "cardData": {"cardParamMap": {"items": json.dumps(rows, ensure_ascii=False)}},
         "imRobotOpenDeliverModel": {"spaceType": "IM_ROBOT", "robotCode": creds.get("robot_code")},
         "imRobotOpenSpaceModel": {"supportForward": True},
         "openSpaceId": f"dtv1.card//im_robot.{uid}",
     }
 
 
-def _canonical_order(items: list[Item]) -> list[Item]:
-    """Mirror synthesize.py's display order (fresh first, then backfill) WITHOUT importing/altering
-    synthesize — so a card's [N] equals the brief's [N]. Within each group the input order
-    (rerank / items.json order) is preserved."""
-    fresh = [it for it in items if it.published_at is not None]
-    backfill = [it for it in items if it.published_at is None]
-    return fresh + backfill
-
-
-def item_numbering(items: list[Item]) -> dict:
-    """{item.id: (N, marker)} — N is the 1-based position in the canonical display order, marker is
-    🆕 (today-new, has published_at) / 📚 (backfill, undated). Built from the FULL list so the
-    card's [N]+marker line up 1:1 with the brief, even though the deep-read items that actually get
-    cards are a non-contiguous subset."""
-    return {it.id: (n, "🆕" if it.published_at is not None else "📚")
-            for n, it in enumerate(_canonical_order(items), 1)}
-
-
-def deep_read_items(digest: Digest) -> list[Item]:
-    """Items worth a card: those with a real 详解 (skip the degrade marker)."""
-    return [it for it in digest.items
-            if it.explain_zh and not it.explain_zh.startswith(_DEGRADE_PREFIX)]
-
-
 @register("channel", "dingtalk_card")
 class DingtalkCardChannel(Channel):
     name = "dingtalk_card"
-    a0_one_card = False   # A1: deliver every deep-read item (A0 set this True for the 1-card gate)
 
     def is_enabled(self, config: Any) -> bool:
         return config.channels.dingtalk_card is not None
@@ -126,13 +119,10 @@ class DingtalkCardChannel(Channel):
                          hint="env DINGTALK_CLIENT_ID/SECRET + CARD_TEMPLATE_ID(.schema) + ROBOT_CODE + USER_ID")
             return False
 
-        numbering = item_numbering(digest.items)   # [N]+marker over the FULL list (matches the brief)
-        items = deep_read_items(digest)
-        if not items:
+        rows = build_items(digest)
+        if not rows:
             ctx.log.warn("dingtalk_card: no deep-read items to deliver")
             return False
-        if self.a0_one_card:
-            items = items[:1]
 
         session = requests.Session()
         session.trust_env = False   # DingTalk is domestic — never via the proxy
@@ -142,14 +132,9 @@ class DingtalkCardChannel(Channel):
             ctx.log.warn("dingtalk_card token failed", error=repr(e)[:160])
             return False
 
-        ok = 0
-        for it in items:
-            num, marker = numbering.get(it.id, (0, "🆕"))
-            if self._deliver_one(session, token, creds, digest.date, it, num, marker, ctx):
-                ok += 1
-            time.sleep(0.3)
-        ctx.log.info("dingtalk_card delivered", cards=ok, attempted=len(items))
-        return ok > 0
+        ok = self._deliver(session, token, creds, digest.date, rows, ctx)
+        ctx.log.info("dingtalk_card list delivered", rows=len(rows), ok=ok)
+        return ok
 
     def _token(self, session: requests.Session, creds: dict) -> str:
         r = session.post(_TOKEN_URL, timeout=20,
@@ -157,18 +142,17 @@ class DingtalkCardChannel(Channel):
         r.raise_for_status()
         return r.json()["accessToken"]
 
-    def _deliver_one(self, session, token, creds, date, item: Item, num: int, marker: str, ctx) -> bool:
+    def _deliver(self, session, token, creds, date, rows, ctx) -> bool:
         try:
-            r = session.post(_SEND_URL, json=build_send_request(date, item, num, marker, creds), timeout=20,
+            r = session.post(_SEND_URL, json=build_list_request(date, rows, creds), timeout=20,
                              headers={"x-acs-dingtalk-access-token": token,
                                       "Content-Type": "application/json"})
             data = r.json() if r.content else {}
             if r.status_code == 200 and not data.get("code"):
                 return True
             ctx.log.warn("dingtalk_card rejected", status=r.status_code,
-                         code=data.get("code"), errmsg=data.get("message"),
-                         body=(r.text or "")[:300])
+                         code=data.get("code"), errmsg=data.get("message"), body=(r.text or "")[:300])
             return False
         except Exception as e:  # noqa: BLE001
-            ctx.log.warn("dingtalk_card deliver failed", id=item.id, error=repr(e)[:160])
+            ctx.log.warn("dingtalk_card deliver failed", error=repr(e)[:160])
             return False
