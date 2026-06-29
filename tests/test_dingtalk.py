@@ -15,25 +15,24 @@ def _item(**kw):
 
 
 # ---------------- outbound: createAndDeliver body ----------------
-def test_build_card_request_shape():
-    from radar.channels.dingtalk_card import CARD_VARS, build_card_request
-    creds = {"card_template_id": "tmpl", "user_id": "U123", "robot_code": "RC"}
-    body = build_card_request("2026-06-28", _item(id="abc", title="Hi", url="http://x"), creds)
-    assert body["cardTemplateId"] == "tmpl"
-    assert body["outTrackId"] == "2026-06-28:abc"           # ties the click back to the item
-    assert body["callbackType"] == "STREAM"
-    assert body["openSpaceId"] == "dtv1.card//IM_ROBOT.U123"
-    assert body["imRobotOpenDeliverModel"] == {"spaceType": "IM_ROBOT", "robotCode": "RC"}
-    pm = body["cardData"]["cardParamMap"]
-    assert pm["title"] == "Hi" and pm["url"] == "http://x"   # title+url → clickable link in template
-    assert set(pm) == set(CARD_VARS)                         # keys must match template vars (命门)
-    assert all(isinstance(v, str) for v in pm.values())      # cardParamMap values must be strings
+def test_build_card_param_map():
+    from radar.channels.dingtalk_card import build_card_param_map
+    m = build_card_param_map(_item(id="abc", title="Hi", url="http://x", reason="一句话理由"))
+    assert m == {"markdown": "**[Hi](http://x)**\n\n一句话理由"}   # one markdown var: title-link + reason
+    assert all(isinstance(v, str) for v in m.values())        # cardParamMap requires string values
 
 
-def test_build_card_request_robot_code_optional():
-    from radar.channels.dingtalk_card import build_card_request
-    body = build_card_request("2026-06-28", _item(), {"card_template_id": "t", "user_id": "U"})
-    assert body["imRobotOpenDeliverModel"] == {"spaceType": "IM_ROBOT"}   # no robotCode key
+def test_build_send_request():
+    from radar.channels.dingtalk_card import build_send_request
+    body = build_send_request("2026-06-28", _item(id="abc"),
+                              {"card_template_id": "tpl-uuid.schema", "user_id": "U123", "robot_code": "RC"})
+    assert body["cardTemplateId"] == "tpl-uuid.schema"        # app-bound template — the only Stream path
+    assert body["outTrackId"] == "2026-06-28:abc"             # ties the click back to the item
+    assert body["callbackType"] == "STREAM"                   # → callback reaches /v1.0/card/instances/callback
+    assert "一句话理由" in body["cardData"]["cardParamMap"]["markdown"]   # template variable, not inline content
+    assert body["imRobotOpenDeliverModel"] == {"spaceType": "IM_ROBOT", "robotCode": "RC"}  # uppercase
+    assert body["openSpaceId"] == "dtv1.card//im_robot.U123"  # LOWERCASE im_robot (per DingTalk codegen)
+    assert body["userId"] == "U123" and body["userIdType"] == 1
 
 
 def test_deep_read_items_filters():
@@ -76,6 +75,18 @@ def test_parse_card_callback_value_shapes():
     assert parse_card_callback({"outTrackId": "d:i", "content": "garbage"}) is None
     assert parse_card_callback({}) is None
     assert parse_card_callback(None) is None
+
+
+def test_normalize_callback_raw_fallback():
+    from radar.serve.listener import _normalize_callback, parse_card_callback
+    # sdk=None → pure raw passthrough (the SDK path is exercised by the real A0 run)
+    raw = {"outTrackId": "2026-06-28:abc", "content": "up", "userId": "U9"}
+    assert _normalize_callback(raw, None) == {"outTrackId": "2026-06-28:abc", "content": "up", "userId": "U9"}
+    # alt raw key cardInstanceId is honored
+    assert _normalize_callback({"cardInstanceId": "d:i", "content": "down"}, None)["outTrackId"] == "d:i"
+    # a normalized frame still parses end-to-end
+    assert parse_card_callback(_normalize_callback(raw, None)) == \
+        {"date": "2026-06-28", "item_id": "abc", "vote": "up", "user_id": "U9"}
 
 
 def test_item_snapshot(tmp_path, monkeypatch):

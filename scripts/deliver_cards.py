@@ -18,17 +18,26 @@ from radar.core.models import Digest, Item, RunContext, TimeWindow
 from radar.obs import Logger, Tracer
 
 
-def main(date: str) -> int:
+def main(date: str, index: int = 0) -> int:
     registry.load_adapters()
     config = load_config()
     if config.channels.dingtalk_card is None:
-        print("enable it first: add an (even empty) [channels.dingtalk_card] section to config.toml")
-        return 1
+        from radar.core.config import DingtalkCardConfig
+        config.channels.dingtalk_card = DingtalkCardConfig()   # enable via env only (no config.toml edit)
     raw = read_json(Paths.digests / f"{date}.items.json")
     if not raw:
         print(f"no digest items for {date} (data/digests/{date}.items.json)")
         return 1
     digest = Digest(date=date, items=[Item(**it) for it in raw])
+
+    # pick the index-th deep-read item to deliver — a different item => a fresh outTrackId
+    # ({date}:{id}), so re-testing renders a brand-new card instead of reusing the prior one
+    from radar.channels.dingtalk_card import deep_read_items
+    dr = deep_read_items(digest)
+    if dr:
+        pick = dr[index % len(dr)]
+        digest.items = [pick]
+        print(f"delivering deep-read item #{index % len(dr)}: {pick.title[:70]!r}")
 
     ctx = RunContext(run_id="a0-deliver", mode="daily", config=config, window=TimeWindow(48))
     ctx.log = Logger("a0-deliver", log_path=Paths.state / "radar.log", echo=True)
@@ -41,4 +50,6 @@ def main(date: str) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1] if len(sys.argv) > 1 else "2026-06-26"))
+    _date = sys.argv[1] if len(sys.argv) > 1 else "2026-06-26"
+    _idx = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    raise SystemExit(main(_date, _idx))

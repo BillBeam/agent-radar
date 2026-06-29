@@ -147,3 +147,38 @@
 **serve 卫生**：剥 `ANTHROPIC_API_KEY`（不调 LLM）；**无 run-lock**（只写 feedback，不碰 seen/digest/pipeline）；SIGINT 优雅退出；`start_forever` 自带重连；handler 包 try/except，单次回调失败不挂服务；聊天消息 handler 打印 senderStaffId（用户发条消息即得 userId）。SDK 类名/topic 已对安装版 0.24.3 introspect 核实。
 
 **回调 value 解析（真实结构，别假设）**：钉钉 `actionCallback` 的 `content` 是 **JSON 字符串** → `cardPrivateData{actionIds:[点的按钮id], params:{配的回传参数}}`。用户模板的按钮用**官方 `actionType:request` + `value`**（👍=up/👎=down），vote 的真实落点必须**首次点击打全量原始 payload 看清再 pin**（CardHandler 已加 RAW 日志）。`_extract_vote` 对多形状鲁棒：content 直接是 "up"/"down"、`params.value/vote/action`、`cardPrivateData.value`、`actionIds` 字面 up/down 都能捞出——真跑确认后收窄。**cardTemplateId**：钉钉模板管理基本只有 GUI，从卡片搭建器编辑页 URL 取（`<uuid>.schema`）；`scripts/list_card_templates.py` 先验凭证再 best-effort 试 API。
+
+---
+
+# Phase A · 真跑暴露的架构修正（旧路黑洞 → createAndDeliver 唯一正路）
+
+**真跑结论（两套卡片 API 撕裂，踩了整整一天才定位）**：钉钉互动卡片有**新旧两套**，回调路由完全不同——
+
+| 路 | 投递接口 | 回调去向 | 能否走 Stream |
+|---|---|---|---|
+| 旧（IM Bot 富文本卡片）| `POST /v1.0/im/v1.0/robot/interactiveCards/send`（cardTemplateId=内置 `StandardCard` + **内联 cardData**）| 机器人 HTTP outgoing webhook | **❌ 黑洞**——payload 里**没有任何字段**能声明 STREAM，request 按钮点击在 Stream 模式下零帧 |
+| 新（卡片平台·实例生命周期）| `POST /v1.0/card/instances/createAndDeliver`（cardTemplateId=**真模板** + `cardData.cardParamMap`）| `/v1.0/card/instances/callback` | **✅** 请求级 `callbackType="STREAM"` 精准路由 |
+
+**实测验证**：interactiveCards/send **能投递+完美渲染**（标题链接/👍👎 都正常显示），但点击按钮 serve 端**零 Stream 帧**——同一个 serve 同时收得到普通聊天消息（`/v1.0/im/bot/messages/get`），唯独卡片点击进不来。排除了多实例冲突、代理、权限（Card.Instance.Write 已开）。两个独立外部 AI 交叉确认：**旧路是断头路，不是配置能修的，是产品能力边界**。
+
+**两个静默坑叠加导致 `templateNotExist`**（之前一直卡在这）：
+1. **模板建错了搭建器**：`card.dingtalk.com/card-builder` 是**普通版内联卡片**搭建器，它建的模板（如 `1ae1f1c4-…`）createAndDeliver 永远找不到——普通版是内联发的、不靠模板引用，故**没有「关联应用」概念**。高级版模板必须在**开发者后台卡片平台** `open-dev.dingtalk.com/fe/card` 建。
+2. **关联应用入口在创建弹窗、不在画布**：钉钉**不支持事后绑定应用**，关联只在「新建模板」弹窗的那一瞬间（填模板名 + 关联应用=本企业内部应用）。这就是之前在画布里翻遍找不到入口的原因。
+3. 模板 ID **带 `.schema` 后缀**（官方示例无一例外），模板列表页直接显示，肉眼复制即可。
+
+**createAndDeliver 无内联模式**（扒 SDK 0.24.x 源码确认）：body 只有 `cardData.cardParamMap`（模板变量→填值），**不存在内联 contents**，也没有跨组织通用的「内置 request 按钮模板」。高级版就是模板制，必须有个**发布过、关联了本应用、带 `.schema`** 的真模板，没有捷径。
+
+**channel 改造（本次）**：`dingtalk_card.py` 从 interactiveCards/send 切到 **createAndDeliver + callbackType=STREAM**；`build_card_data`（内联）→ `build_card_param_map`（模板变量 title/url/reason/status）；`missing` 检查加 `card_template_id`。AI2 确认我原先手拼的 createAndDeliver body 结构本来就对，**只错在模板**（建错地方+没关联应用）。
+
+**回调落点（按真实帧解析，不假设）**：高级版回传的按钮 params 落在 `content.cardPrivateData.params`（如 `{action:vote, vote:up}`）——和旧版单 `value` 字段不同。listener 加 `_normalize_callback`：优先用 SDK `CardCallbackMessage.from_dict`（`card_instance_id`==outTrackId、`content`==cardPrivateData）取出，失败回退原始 dict；再喂给已测的 `parse_card_callback`+`_extract_vote`。仍保留**首帧全量 RAW 日志**，真实落点点一下即 pin。
+
+**四点自检清单（收不到回调时按这查，外部 AI 给的）**：① topic `/v1.0/card/instances/callback` 已注册 ✓；② createAndDeliver 带 `callbackType=STREAM` ✓（默认）；③ **拿 access_token 的 client_id 必须 == 注册 Stream 的 client_id**（最易静默踩——本项目同一个 app `dingxrlbmqcusr7pmsdw`，✓）；④ 同 client_id 只起一个 Stream ✓。修好模板后下一批可能撞：`param.empty`（cardParamMap 空）/ `spaces of card is empty`（openSpaceId 拼坏）。
+
+**A0 gate = ✅ 真跑验通（2026-06-29）**：投 1 卡 → 用户点 👍 → 回调进 `/v1.0/card/instances/callback`（Stream）→ 写 feedback。原始帧实锤：`content="{\"cardPrivateData\":{\"actionIds\":[\"up\"],\"params\":{\"vote\":\"up\"}}}"` + `outTrackId="2026-06-26:1b75e302573bf166"`；`record_feedback` 写出的快照与 `radar mark` **逐键一致**。磨了一整天的回调路由就此关闭。
+
+**真跑暴露的 3 个收尾要点（写代码/建模板必须知道）**：
+1. **模板内容只能 GUI 建，但能用「导入卡片模板」一键导入**（88 菜单 → 导入/导出）。`createAndDeliver`/`/v1.0/card/instances` 等所有卡片 API 都要先有**已发布、已关联应用**的 `cardTemplateId`，没有「写模板内容」的 API。导入格式 = `{editorData(转义schema串), widgetInfo, type, mode}`；`type` 必须匹配（IM 机器人卡片 = **`type:"im"` / schemaVersion 3.0.0**，helloworld 的 `standard`/2.0.0 会报「卡片类型不符合」）。我从官方 `dingtalk-card-examples` 的 `交互组件`(im/3.0) 抠出 `Card`+`BaseText`+`SingleButton` 拼最小卡，置空 widgetInfo——**发布时搭建器会从 schema 重编译 widgetInfo**（导出实测 24544 字符、含 `node_radar_up/down`+`request`，按钮真在编译产物里）。
+2. **openSpaceId 用小写 `im_robot`**（`dtv1.card//im_robot.{userId}`），而 `imRobotOpenDeliverModel.spaceType` 用大写 `IM_ROBOT`——大小写不一致是钉钉官方 codegen 写法，全大写会静默失败。`cardParamMap` 值必须全 string。
+3. **按钮 request 回调落点**：`content`（JSON 串）→ `cardPrivateData.params.vote`（建模板时按钮挂 params `{vote: up/down}`）+ `cardPrivateData.actionIds=["up"/"down"]`（actionId）。`_extract_vote` 两条路径都能捞。
+
+**A1 待办（已知缺口，非阻塞 A0）**：BaseText 的 `text.content="${markdown}"` 变量绑定**被搭建器导入时清成 `""`**（`${}` 插值对 BaseText 不生效，正文当前空白）——A1 要换成结构化变量绑定（参考 helloworld 的 Markdown 组件 `content:{valueType:"variable",variable:"markdown"}`）或改用支持 markdown 的组件，让每条目正文+可点标题正常显示；再做 per-item 循环 + 接 `deliver.py` + 投票改票高亮 + markdown 推送默认关 + serve 常驻说明。

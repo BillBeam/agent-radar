@@ -55,7 +55,8 @@ def _extract_vote(content) -> Optional[str]:
 def parse_card_callback(data: dict) -> Optional[dict]:
     """A card actionCallback payload → {date, item_id, vote, user_id}, or None if not a 👍/👎.
     outTrackId is '{date}:{item_id}'; the vote is recovered by _extract_vote (robust to the
-    request/value button shape)."""
+    request/value button shape). Accepts both raw frame keys and the normalized ones from
+    _normalize_callback (outTrackId/content/userId)."""
     if not isinstance(data, dict):
         return None
     out_track_id = data.get("outTrackId") or ""
@@ -66,6 +67,30 @@ def parse_card_callback(data: dict) -> Optional[dict]:
     if vote not in _VOTES:
         return None
     return {"date": date, "item_id": item_id, "vote": vote, "user_id": data.get("userId")}
+
+
+def _normalize_callback(raw: dict, sdk) -> dict:
+    """Normalize a Stream card-callback frame to {outTrackId, content, userId} the way
+    parse_card_callback expects. Prefer the SDK's CardCallbackMessage (it knows the envelope:
+    card_instance_id == outTrackId, content == cardPrivateData{...}); fall back to the raw dict
+    if the SDK shape differs. Pure-ish: `sdk` is the dingtalk_stream module (or None in tests)."""
+    out_id = content = user = None
+    try:
+        msg = sdk.CardCallbackMessage.from_dict(raw) if sdk else None
+        if msg is not None:
+            out_id = (getattr(msg, "card_instance_id", None) or getattr(msg, "out_track_id", None)
+                      or getattr(msg, "outTrackId", None))
+            content = getattr(msg, "content", None)
+            user = getattr(msg, "user_id", None) or getattr(msg, "userId", None)
+    except Exception:  # noqa: BLE001 — SDK shape drift must never block; raw fallback covers it
+        pass
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "outTrackId": out_id or raw.get("outTrackId") or raw.get("cardInstanceId"),
+        "content": content if content is not None else raw.get("content"),
+        "userId": user or raw.get("userId"),
+    }
 
 
 def item_snapshot(date: str, item_id: str) -> dict:
@@ -115,7 +140,8 @@ def run_listener(config: Optional[RadarConfig] = None) -> int:
             try:
                 log.info("card callback RAW (A0 — pin the vote field from this)",
                          payload=json.dumps(raw, ensure_ascii=False)[:1200])
-                parsed = parse_card_callback(raw)
+                norm = _normalize_callback(raw if isinstance(raw, dict) else {}, dingtalk_stream)
+                parsed = parse_card_callback(norm) or parse_card_callback(raw)
                 if parsed:
                     record_feedback(parsed["date"], item_snapshot(parsed["date"], parsed["item_id"]),
                                     parsed["vote"])
@@ -129,6 +155,14 @@ def run_listener(config: Optional[RadarConfig] = None) -> int:
             return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
     client.register_callback_handler(dingtalk_stream.CallbackHandler.TOPIC_CARD_CALLBACK, CardHandler())
+    # robot interactive cards (interactiveCards/send) may route their button callback to a
+    # different topic — register the candidates too so a click reveals/uses the right one.
+    for extra in ("/v1.0/im/robots/interactiveCards", "/v1.0/im/bot/interactiveCard/callback",
+                  "/v1.0/im/robot/interactiveCard/callback"):
+        try:
+            client.register_callback_handler(extra, CardHandler())
+        except Exception as e:  # noqa: BLE001
+            log.warn("extra card topic not registered", topic=extra, error=repr(e)[:80])
 
     # convenience (best-effort): message the bot once → your userId shows up in the log
     try:

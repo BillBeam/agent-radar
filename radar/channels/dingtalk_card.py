@@ -1,23 +1,32 @@
 """DingTalk interactive-card channel — per-item 👍/👎 cards (Phase A).
 
-Delivers deep-read items as interactive cards to the user 1-on-1 (IM_ROBOT). The 👍/👎
-buttons fire STREAM callbacks, caught by `radar --mode serve`, which writes feedback through
-the SAME `record_feedback` as `radar mark`. The markdown `dingtalk` channel stays as a
-configurable fallback. Secrets come ONLY from env. No proxy (DingTalk is domestic).
+Delivers deep-read items as interactive cards to the user 1-on-1 via the robot. A 👍/👎 tap
+fires a `request` callback that — and this is the whole point — routes to the **Stream** long
+connection (caught by `radar --mode serve`), which writes feedback through the SAME
+`record_feedback` as `radar mark`. The markdown `dingtalk` channel stays as a fallback.
+Secrets come ONLY from env. No proxy (DingTalk is domestic).
 
-Confirmed API (dingtalk-stream-sdk-python):
-  token    POST {OAPI}/v1.0/oauth2/accessToken           {appKey, appSecret} → accessToken
-  deliver  POST {OAPI}/v1.0/card/instances/createAndDeliver  (header x-acs-dingtalk-access-token)
-           body: cardTemplateId + outTrackId + cardData.cardParamMap(str values) + callbackType
-           + openSpaceId="dtv1.card//IM_ROBOT.{userId}" + imRobotOpenSpaceModel
-           + imRobotOpenDeliverModel{spaceType:"IM_ROBOT", robotCode}
-The cardParamMap keys MUST match the template's variable names (the 命门 — see CARD_VARS).
+API: POST {OAPI}/v1.0/card/instances/createAndDeliver  (卡片平台·创建并投递，高级版)
+  body: cardTemplateId = a template BUILT IN open-dev.dingtalk.com/fe/card AND associated with
+        THIS app at creation time (ends in `.schema`) — the only path whose request-button
+        callback reaches Stream; the old robot interactiveCards/send route black-holes the
+        callback (HTTP only), confirmed by real testing.
+        + callbackType="STREAM"  → callback lands on /v1.0/card/instances/callback (registered in serve)
+        + cardData.cardParamMap  → fills the template variables (title/url/reason/status)
+        + openSpaceId="dtv1.card//IM_ROBOT.{userId}" + imRobotOpenDeliverModel{robotCode} → 1v1 push
+        + outTrackId="{date}:{id}" → ties the click back to the item
 
-A0 scope: deliver ONE card (the first deep-read item) to validate the template lifeline end
-to end. A1 lifts the cap to all deep-read items and wires this into deliver.py.
+The template's variable names MUST match cardParamMap's keys exactly, and its two buttons must be
+`request` actions carrying params {"action":"vote","vote":"up"/"down"} — a silent-failure contract
+(decisions.md). createAndDeliver has NO inline-content mode: the card content lives in the template,
+we only pass variable values.
+
+A0 scope: deliver ONE card (the first deep-read item) to validate the loop end to end. A1 lifts
+the cap to all deep-read items and wires this into deliver.py.
 """
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -29,42 +38,43 @@ from ..core.registry import register
 
 _OAPI = "https://api.dingtalk.com"
 _TOKEN_URL = f"{_OAPI}/v1.0/oauth2/accessToken"
-_DELIVER_URL = f"{_OAPI}/v1.0/card/instances/createAndDeliver"
-
-# Template variable names the card platform template MUST define (keep in sync with the template).
-CARD_VARS = ("title", "url", "reason", "status")
-_DEGRADE_PREFIX = "（原文"   # deepread's "no body" marker — skip those (nothing to read/vote on)
+_SEND_URL = f"{_OAPI}/v1.0/card/instances/createAndDeliver"
+_DEGRADE_PREFIX = "（原文"   # deepread's "no body" marker — skip those
 
 
-def _essence(item: Item, limit: int = 80) -> str:
+def _essence(item: Item, limit: int = 120) -> str:
     return ((item.reason or item.title or "").strip())[:limit]
 
 
-def card_param_map(item: Item) -> dict[str, str]:
-    """Template variable values (all strings). `title`/`url` let the template render the title as
-    a clickable link so the user can read before voting; `status` is filled to 已记录 on click."""
-    return {
-        "title": (item.title or "")[:80],
-        "url": item.url or "",
-        "reason": _essence(item),
-        "status": "",
-    }
+def build_card_param_map(item: Item) -> dict:
+    """The template-variable values (createAndDeliver fills these into the template). Keys MUST
+    match the template's variable names exactly — the A0 template (imported, helloworld-derived)
+    has ONE `markdown` variable: a bold clickable title link + the one-line reason. All values
+    are strings (cardParamMap requires strings). A1 can split this into title/url/reason/status."""
+    title = (item.title or "")[:120]
+    url = item.url or ""
+    reason = _essence(item)
+    head = f"**[{title}]({url})**" if url else f"**{title}**"
+    return {"markdown": f"{head}\n\n{reason}"}
 
 
-def build_card_request(date: str, item: Item, creds: dict) -> dict:
-    """The createAndDeliver body for a 1v1 IM_ROBOT card. outTrackId={date}:{id} ties a click
-    back to the item; the 👍/👎 buttons (defined in the template) carry the vote in their params."""
-    deliver_model: dict[str, Any] = {"spaceType": "IM_ROBOT"}
-    if creds.get("robot_code"):
-        deliver_model["robotCode"] = creds["robot_code"]
+def build_send_request(date: str, item: Item, creds: dict) -> dict:
+    """Body for /v1.0/card/instances/createAndDeliver (1v1 robot push, STREAM callback).
+    outTrackId={date}:{id} ties a click back to the item; the 👍/👎 request buttons live in the
+    template (params {"vote": up/down}) and fire the Stream callback. Field shapes verified against
+    DingTalk's own createAndDeliver codegen for this template — note openSpaceId uses LOWERCASE
+    `im_robot` while imRobotOpenDeliverModel.spaceType is UPPERCASE `IM_ROBOT` (silent-fail trap)."""
+    uid = creds["user_id"]
     return {
-        "cardTemplateId": creds["card_template_id"],
+        "userId": uid,
+        "userIdType": 1,
+        "cardTemplateId": creds.get("card_template_id"),
         "outTrackId": f"{date}:{item.id}",
-        "cardData": {"cardParamMap": {k: str(v) for k, v in card_param_map(item).items()}},
         "callbackType": "STREAM",
-        "openSpaceId": f"dtv1.card//IM_ROBOT.{creds['user_id']}",
+        "cardData": {"cardParamMap": build_card_param_map(item)},
+        "imRobotOpenDeliverModel": {"spaceType": "IM_ROBOT", "robotCode": creds.get("robot_code")},
         "imRobotOpenSpaceModel": {"supportForward": True},
-        "imRobotOpenDeliverModel": deliver_model,
+        "openSpaceId": f"dtv1.card//im_robot.{uid}",
     }
 
 
@@ -77,7 +87,7 @@ def deep_read_items(digest: Digest) -> list[Item]:
 @register("channel", "dingtalk_card")
 class DingtalkCardChannel(Channel):
     name = "dingtalk_card"
-    a0_one_card = True   # A0: deliver a single card to validate the lifeline; A1 sets this False
+    a0_one_card = True   # A0: deliver a single card to validate the loop; A1 sets this False
 
     def is_enabled(self, config: Any) -> bool:
         return config.channels.dingtalk_card is not None
@@ -87,10 +97,10 @@ class DingtalkCardChannel(Channel):
         if cfg is None:
             return False
         creds = cfg.resolved()
-        missing = cfg.missing(("client_id", "client_secret", "card_template_id", "user_id"))
+        missing = cfg.missing(("client_id", "client_secret", "card_template_id", "robot_code", "user_id"))
         if missing:
             ctx.log.warn("dingtalk_card disabled — missing creds/ids", missing=missing,
-                         hint="set env DINGTALK_CLIENT_ID/SECRET (+ user_id, card_template_id)")
+                         hint="env DINGTALK_CLIENT_ID/SECRET + CARD_TEMPLATE_ID(.schema) + ROBOT_CODE + USER_ID")
             return False
 
         items = deep_read_items(digest)
@@ -124,14 +134,15 @@ class DingtalkCardChannel(Channel):
 
     def _deliver_one(self, session, token, creds, date, item: Item, ctx) -> bool:
         try:
-            r = session.post(_DELIVER_URL, json=build_card_request(date, item, creds), timeout=20,
+            r = session.post(_SEND_URL, json=build_send_request(date, item, creds), timeout=20,
                              headers={"x-acs-dingtalk-access-token": token,
                                       "Content-Type": "application/json"})
             data = r.json() if r.content else {}
             if r.status_code == 200 and not data.get("code"):
                 return True
             ctx.log.warn("dingtalk_card rejected", status=r.status_code,
-                         code=data.get("code"), msg=data.get("message"))
+                         code=data.get("code"), errmsg=data.get("message"),
+                         body=(r.text or "")[:300])
             return False
         except Exception as e:  # noqa: BLE001
             ctx.log.warn("dingtalk_card deliver failed", id=item.id, error=repr(e)[:160])
