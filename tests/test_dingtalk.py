@@ -25,8 +25,9 @@ def test_build_card_param_map():
     assert long.startswith("[1] 📚 T — ") and long.endswith("…") and len(long) < 80
 
 
-def test_build_send_request():
+def test_build_send_request(monkeypatch):
     from radar.channels.dingtalk_card import build_send_request
+    monkeypatch.delenv("DINGTALK_OUTTRACK_NONCE", raising=False)   # default: stable outTrackId
     body = build_send_request("2026-06-28", _item(id="abc", title="Hi", reason="理由"), 2, "🆕",
                               {"card_template_id": "tpl-uuid.schema", "user_id": "U123", "robot_code": "RC"})
     assert body["cardTemplateId"] == "tpl-uuid.schema"        # app-bound template — the only Stream path
@@ -36,6 +37,14 @@ def test_build_send_request():
     assert body["imRobotOpenDeliverModel"] == {"spaceType": "IM_ROBOT", "robotCode": "RC"}  # uppercase
     assert body["openSpaceId"] == "dtv1.card//im_robot.U123"  # LOWERCASE im_robot (per DingTalk codegen)
     assert body["userId"] == "U123" and body["userIdType"] == 1
+
+
+def test_outtrack_nonce_forces_fresh_instance(monkeypatch):
+    from radar.channels.dingtalk_card import build_send_request
+    monkeypatch.setenv("DINGTALK_OUTTRACK_NONCE", "demo1")        # opt-in: a new card instead of reusing
+    body = build_send_request("2026-06-28", _item(id="abc"), 1, "🆕",
+                              {"card_template_id": "t", "user_id": "U", "robot_code": "R"})
+    assert body["outTrackId"] == "2026-06-28:abc:demo1"
 
 
 def test_item_numbering_matches_brief():
@@ -87,6 +96,9 @@ def test_parse_card_callback_value_shapes():
         {"date": "2026-06-28", "item_id": "abc", "vote": "up", "user_id": "U9"}
     # value passed straight through as plain-string content
     assert parse_card_callback({"outTrackId": "d:i", "content": "down"})["vote"] == "down"
+    # outTrackId may carry an optional trailing nonce (re-delivery): date:item:nonce → item_id=item
+    assert parse_card_callback({"outTrackId": "2026-06-28:abc:demo1", "content": "up"}) == \
+        {"date": "2026-06-28", "item_id": "abc", "vote": "up", "user_id": None}
     # back-compat: custom params.vote
     assert parse_card_callback(
         {"outTrackId": "d:i", "content": {"cardPrivateData": {"params": {"vote": "up"}}}})["vote"] == "up"

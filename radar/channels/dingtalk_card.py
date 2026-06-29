@@ -23,6 +23,7 @@ link: the template's BaseText renders plain text; the markdown brief is the read
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -65,11 +66,15 @@ def build_send_request(date: str, item: Item, num: int, marker: str, creds: dict
     DingTalk's own createAndDeliver codegen — note openSpaceId uses LOWERCASE `im_robot` while
     imRobotOpenDeliverModel.spaceType is UPPERCASE `IM_ROBOT` (silent-fail trap)."""
     uid = creds["user_id"]
+    out_track = f"{date}:{item.id}"
+    nonce = os.getenv("DINGTALK_OUTTRACK_NONCE")   # opt-in: force a fresh card instance (re-deliver/re-test)
+    if nonce:
+        out_track += f":{nonce}"
     return {
         "userId": uid,
         "userIdType": 1,
         "cardTemplateId": creds.get("card_template_id"),
-        "outTrackId": f"{date}:{item.id}",
+        "outTrackId": out_track,
         "callbackType": "STREAM",
         "cardData": {"cardParamMap": build_card_param_map(item, num, marker)},
         "imRobotOpenDeliverModel": {"spaceType": "IM_ROBOT", "robotCode": creds.get("robot_code")},

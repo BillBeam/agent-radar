@@ -194,3 +194,17 @@
 **[N]/🆕📚 是派生不存储 → 卡片自算、且必须按全表算**：`item_numbering(digest.items)` 镜像 `synthesize` 的规范序（`fresh=有 published_at` + `backfill=无` → `fresh+backfill`，位置即 [N]，🆕/📚 由 `published_at`），**在过滤深读项之前**算好——深读项是全表的**非连续子集**，[N] 必须是全表位置才能和简报对齐。`_canonical_order` 在 channel 内自算（同一规则、**不改 synthesize**），结构上保证与简报一致。
 
 **入站归一化契约**：`InboundVote = {date,item_id,vote,user_id}` 是 platform→core 的**唯一**入站契约；`parse_card_callback` 是**唯一**懂钉钉帧的代码，下游 `item_snapshot`+`record_feedback` 只吃归一化字段、不碰帧。将来加平台 = 加一个 parser 产 InboundVote、core 不动。**只此一层，不建多平台抽象**（单用户单平台，多 adapter 网关是过度设计）。
+
+---
+
+# Phase A1 · 模板正文渲染的破局（钉钉 8.0 控制台两大坑 — 血泪教训）
+
+**真跑验通（2026-06-29，模板 `c35470de`）**：per-item 卡片显示 `[N] 🆕 标题 — 理由` + 👍👎 → 点击 → 回调（`outTrackId=2026-06-26:f90fa6cabc2908fd:a1final`）→ 解析（nonce 剥离）→ `feedback` 写入、与 `radar mark` 逐键一致。Phase A 完整收官。
+
+**坑 1：导入写的变量绑定一律被搭建器清空**。BaseText 的 `text` 不管写 `${markdown}` 插值还是结构化 `{valueType:"variable"}`，**导入后都被重置成 `content:""`**（三次导出实测）。**只有在搭建器 GUI 里手绑才行**——选中文本组件 → `text` 字段敲 `$` → 选变量。GUI 手绑会正确编译进 `widgetInfo`（`text="@toStr{@data{data.cardData.markdown}}"`），导入的不会。
+
+**坑 2（更隐蔽）：模板一旦发布，就不能再发布**。8.0 控制台里，未发布的新模板右上角有「发布」；**首次发布后「发布」消失、变成「卡片实例管理」**（那只是管理已投递实例、不是再发布）。所以**对已发布模板的任何编辑（绑定、改色）都只存进草稿、永远到不了投递**（实测：草稿是金色按钮，投递出来还是蓝色旧版；探针卡内容空）。卡了一下午就是这个——一直在改一个发布过、改不动的模板。
+
+**解法（唯一可行顺序）：新建模板 → 导入（按钮等结构）→ 在 GUI 里手绑变量 → 再首次发布**。把绑定包进那唯一一次发布里，绕开「发布后不能再发布」。`c35470de` 就是这么建成的。⚠️ 教训：**钉钉高级版卡片模板基本是「一次性」的——发布前必须把内容、绑定全部弄对**；要改就新建。
+
+**outTrackId nonce（`DINGTALK_OUTTRACK_NONCE`，opt-in）**：钉钉同 outTrackId 复用不刷新（doc：换 templateId/cardData 要换全新 outTrackId）。加可选 nonce → `{date}:{item_id}:{nonce}` 强制新卡实例，便于复投/改票/换模板测试；`parse_card_callback` 按 `:` 切片取前两段，**自动剥离 nonce**（item_id 不受污染）。生产默认不带 nonce（稳定 id，每天新日期天然新鲜）。

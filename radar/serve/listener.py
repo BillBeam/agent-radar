@@ -71,7 +71,8 @@ def parse_card_callback(data: dict) -> Optional[dict]:
     out_track_id = data.get("outTrackId") or ""
     if ":" not in out_track_id:
         return None
-    date, item_id = out_track_id.split(":", 1)
+    parts = out_track_id.split(":")          # '{date}:{item_id}' (+ optional ':{nonce}' from re-delivery)
+    date, item_id = parts[0], parts[1]
     vote = _extract_vote(data.get("content"))
     if vote not in _VOTES:
         return None
