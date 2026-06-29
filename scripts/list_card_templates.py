@@ -14,11 +14,13 @@ import sys
 import requests
 
 OAPI = "https://api.dingtalk.com"
+_S = requests.Session()
+_S.trust_env = False   # DingTalk is domestic — never via the (Western) proxy
 
 
 def _token(client_id: str, client_secret: str) -> str:
-    r = requests.post(f"{OAPI}/v1.0/oauth2/accessToken", timeout=20,
-                      json={"appKey": client_id, "appSecret": client_secret})
+    r = _S.post(f"{OAPI}/v1.0/oauth2/accessToken", timeout=20,
+                json={"appKey": client_id, "appSecret": client_secret})
     r.raise_for_status()
     return r.json()["accessToken"]
 
@@ -38,8 +40,8 @@ def main() -> int:
     # best-effort: DingTalk template management is mostly GUI; these may 404, that's fine.
     for path in ("/v1.0/card/templates", "/v1.0/card/templates/query", "/v1.0/card/instances/templates"):
         try:
-            r = requests.get(f"{OAPI}{path}", timeout=15,
-                             headers={"x-acs-dingtalk-access-token": token})
+            r = _S.get(f"{OAPI}{path}", timeout=15,
+                       headers={"x-acs-dingtalk-access-token": token})
             if r.status_code == 200 and r.content:
                 print(f"templates via {path}:\n{r.text[:2000]}")
                 return 0
