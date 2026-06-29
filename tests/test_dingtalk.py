@@ -52,17 +52,28 @@ def test_channel_disabled_without_config():
 
 
 # ---------------- inbound: card callback parsing ----------------
-def test_parse_card_callback():
+def test_parse_card_callback_value_shapes():
     from radar.serve.listener import parse_card_callback
-    ok = parse_card_callback({"outTrackId": "2026-06-28:abc", "userId": "U9",
-                              "content": {"cardPrivateData": {"params": {"vote": "up"}}}})
-    assert ok == {"date": "2026-06-28", "item_id": "abc", "vote": "up", "user_id": "U9"}
-    # content may arrive as a JSON string
-    s = json.dumps({"cardPrivateData": {"params": {"vote": "down"}}})
-    assert parse_card_callback({"outTrackId": "2026-06-28:xyz", "content": s})["vote"] == "down"
-    # not a vote / malformed → None (never crashes)
+    # REAL shape: content is a JSON STRING, vote in cardPrivateData.params.value
+    # (template button uses actionType:request + value="up"/"down")
+    s = json.dumps({"cardPrivateData": {"actionIds": ["1"], "params": {"value": "up"}}})
+    assert parse_card_callback({"outTrackId": "2026-06-28:abc", "userId": "U9", "content": s}) == \
+        {"date": "2026-06-28", "item_id": "abc", "vote": "up", "user_id": "U9"}
+    # value passed straight through as plain-string content
+    assert parse_card_callback({"outTrackId": "d:i", "content": "down"})["vote"] == "down"
+    # back-compat: custom params.vote
+    assert parse_card_callback(
+        {"outTrackId": "d:i", "content": {"cardPrivateData": {"params": {"vote": "up"}}}})["vote"] == "up"
+    # the actionId itself is "up"/"down"
+    assert parse_card_callback(
+        {"outTrackId": "d:i", "content": {"cardPrivateData": {"actionIds": ["down"]}}})["vote"] == "down"
+    # cardPrivateData.value
+    assert parse_card_callback(
+        {"outTrackId": "d:i", "content": {"cardPrivateData": {"value": "up"}}})["vote"] == "up"
+    # malformed / no vote → None (never crashes)
     assert parse_card_callback({"outTrackId": "no-colon"}) is None
     assert parse_card_callback({"outTrackId": "d:i", "content": {"cardPrivateData": {"params": {}}}}) is None
+    assert parse_card_callback({"outTrackId": "d:i", "content": "garbage"}) is None
     assert parse_card_callback({}) is None
     assert parse_card_callback(None) is None
 

@@ -145,3 +145,5 @@
 **密钥只从 env**：`DingtalkCardConfig.resolved()` —— client_id/secret 仅 env；template_id/user_id/robot_code env 优先、config 兜底；空 `[channels.dingtalk_card]` 段即可启用（全走 env）。**markdown 推送保留作回退**（A1 跑通后默认关、代码留着）。
 
 **serve 卫生**：剥 `ANTHROPIC_API_KEY`（不调 LLM）；**无 run-lock**（只写 feedback，不碰 seen/digest/pipeline）；SIGINT 优雅退出；`start_forever` 自带重连；handler 包 try/except，单次回调失败不挂服务；聊天消息 handler 打印 senderStaffId（用户发条消息即得 userId）。SDK 类名/topic 已对安装版 0.24.3 introspect 核实。
+
+**回调 value 解析（真实结构，别假设）**：钉钉 `actionCallback` 的 `content` 是 **JSON 字符串** → `cardPrivateData{actionIds:[点的按钮id], params:{配的回传参数}}`。用户模板的按钮用**官方 `actionType:request` + `value`**（👍=up/👎=down），vote 的真实落点必须**首次点击打全量原始 payload 看清再 pin**（CardHandler 已加 RAW 日志）。`_extract_vote` 对多形状鲁棒：content 直接是 "up"/"down"、`params.value/vote/action`、`cardPrivateData.value`、`actionIds` 字面 up/down 都能捞出——真跑确认后收窄。**cardTemplateId**：钉钉模板管理基本只有 GUI，从卡片搭建器编辑页 URL 取（`<uuid>.schema`）；`scripts/list_card_templates.py` 先验凭证再 best-effort 试 API。

@@ -22,25 +22,48 @@ from ..core.io import read_json
 from ..obs import Logger
 
 
+_VOTES = ("up", "down")
+
+
+def _extract_vote(content) -> Optional[str]:
+    """Find the up/down vote across the shapes a `actionType:request` + `value` button can
+    produce. DingTalk's `content` is a JSON STRING → cardPrivateData{actionIds, params}; the
+    button's value may land in params (value/vote/action), in cardPrivateData.value, at
+    content.value, or as the actionId itself. We probe all of them (the real shape is logged
+    raw on the first click and then pinned). Returns 'up'/'down' or None."""
+    if isinstance(content, str):
+        s = content.strip().strip('"')
+        if s.lower() in _VOTES:                  # the value passed straight through as content
+            return s.lower()
+        try:
+            content = json.loads(content)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(content, dict):
+        return None
+    cpd = content.get("cardPrivateData") or {}
+    params = cpd.get("params") or {}
+    candidates = [params.get("value"), params.get("vote"), params.get("action"),
+                  cpd.get("value"), content.get("value")]
+    candidates += list(cpd.get("actionIds") or [])     # e.g. an actionId literally "up"/"down"
+    for c in candidates:
+        if isinstance(c, str) and c.strip().lower() in _VOTES:
+            return c.strip().lower()
+    return None
+
+
 def parse_card_callback(data: dict) -> Optional[dict]:
     """A card actionCallback payload → {date, item_id, vote, user_id}, or None if not a 👍/👎.
-    outTrackId is '{date}:{item_id}'; the vote rides in content.cardPrivateData.params.vote."""
+    outTrackId is '{date}:{item_id}'; the vote is recovered by _extract_vote (robust to the
+    request/value button shape)."""
     if not isinstance(data, dict):
         return None
     out_track_id = data.get("outTrackId") or ""
     if ":" not in out_track_id:
         return None
     date, item_id = out_track_id.split(":", 1)
-
-    content = data.get("content")
-    if isinstance(content, str):
-        try:
-            content = json.loads(content)
-        except (ValueError, TypeError):
-            content = {}
-    params = ((content or {}).get("cardPrivateData") or {}).get("params") or {}
-    vote = params.get("vote")
-    if vote not in ("up", "down"):
+    vote = _extract_vote(data.get("content"))
+    if vote not in _VOTES:
         return None
     return {"date": date, "item_id": item_id, "vote": vote, "user_id": data.get("userId")}
 
@@ -88,16 +111,19 @@ def run_listener(config: Optional[RadarConfig] = None) -> int:
 
     class CardHandler(dingtalk_stream.CallbackHandler):
         async def process(self, callback):  # noqa: ANN001
+            raw = getattr(callback, "data", None)
             try:
-                parsed = parse_card_callback(getattr(callback, "data", None))
+                log.info("card callback RAW (A0 — pin the vote field from this)",
+                         payload=json.dumps(raw, ensure_ascii=False)[:1200])
+                parsed = parse_card_callback(raw)
                 if parsed:
                     record_feedback(parsed["date"], item_snapshot(parsed["date"], parsed["item_id"]),
                                     parsed["vote"])
                     log.info("feedback via card", date=parsed["date"],
                              item_id=parsed["item_id"], vote=parsed["vote"])
                     return dingtalk_stream.AckMessage.STATUS_OK, _card_update_response(parsed["vote"])
-                log.warn("card callback unparseable",
-                         keys=list((getattr(callback, "data", None) or {}).keys()))
+                log.warn("card callback unparseable — see RAW above to pin the vote field",
+                         keys=list((raw or {}).keys()))
             except Exception as e:  # noqa: BLE001 — one bad callback must not kill the service
                 log.error("card callback handler error", error=repr(e)[:200])
             return dingtalk_stream.AckMessage.STATUS_OK, "OK"
