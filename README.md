@@ -87,7 +87,7 @@ pytest
 
 ### 反馈投票常驻（serve，可选）
 
-每日 digest 会向钉钉机器人单聊投**每条目一张互动卡片**（`[N] 🆕/📚 标题 — 理由` + 👍/👎）。要让点击直接写回反馈，常驻一个 Stream 监听：
+每日 digest 会向钉钉机器人单聊投**一张列表卡**（Loop 渲染，每行 `[N] 🆕/📚 + 中文理由` + 👍/👎；一条消息、顺序固定、不刷屏）。要让点击直接写回反馈，常驻一个 Stream 监听：
 
 ```bash
 # 凭证从 env 读（DINGTALK_CLIENT_ID/SECRET/ROBOT_CODE/CARD_TEMPLATE_ID/USER_ID，见本地 .env）。

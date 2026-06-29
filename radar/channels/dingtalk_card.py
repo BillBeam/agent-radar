@@ -29,7 +29,6 @@ _OAPI = "https://api.dingtalk.com"
 _TOKEN_URL = f"{_OAPI}/v1.0/oauth2/accessToken"
 _SEND_URL = f"{_OAPI}/v1.0/card/instances/createAndDeliver"
 _DEGRADE_PREFIX = "（原文"   # deepread's "no body" marker — skip those
-_TITLE_MAX = 80
 _REASON_MAX = 70
 
 
@@ -60,8 +59,10 @@ def deep_read_items(digest: Digest) -> list[Item]:
 
 
 def build_items(digest: Digest) -> list[dict]:
-    """The list card's rows — one per deep-read item. [N]/marker over the FULL list (== the brief);
-    vote tokens (`up_<id>` / `down_<id>`) are pre-computed so each row button's actionId carries
+    """The list card's rows — one per deep-read item. Each row is `[N] 🆕/📚 + Chinese reason`
+    (Chinese-first; the English title is dropped — it's clutter for a CN reader and the full
+    title+link live in the markdown brief). [N]/marker over the FULL list (== the brief); vote
+    tokens (`up_<id>` / `down_<id>`) are pre-computed so each row button's actionId carries
     vote+item_id back. All values are strings (cardParamMap requires strings)."""
     numbering = item_numbering(digest.items)
     rows = []
@@ -70,7 +71,6 @@ def build_items(digest: Digest) -> list[dict]:
         rows.append({
             "num": str(num),
             "marker": marker,
-            "title": _clip(it.title, _TITLE_MAX),
             "reason": _clip(it.reason, _REASON_MAX),
             "up_token": f"up_{it.id}",
             "down_token": f"down_{it.id}",

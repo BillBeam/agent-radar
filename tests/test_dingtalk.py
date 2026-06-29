@@ -25,8 +25,8 @@ def test_build_items():
     rows = build_items(Digest(date="2026-06-26", items=[a, b, c]))
     assert [r["num"] for r in rows] == ["1", "3"]                       # full-list [N], non-contiguous
     assert [r["marker"] for r in rows] == ["🆕", "📚"]
-    # per-row vote tokens carry vote+item_id back via the button actionId
-    assert rows[0] == {"num": "1", "marker": "🆕", "title": "Hi", "reason": "一句话理由",
+    # Chinese-first row (no English title); vote tokens carry vote+item_id back via the actionId
+    assert rows[0] == {"num": "1", "marker": "🆕", "reason": "一句话理由",
                        "up_token": "up_a", "down_token": "down_a"}
     assert all(isinstance(v, str) for r in rows for v in r.values())    # cardParamMap rows are all strings
 
