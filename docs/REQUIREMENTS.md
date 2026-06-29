@@ -71,9 +71,9 @@
 ## 七、当前进度与路线图
 
 - **P0 每日管线** ✅ 已跑通（28 源抓取 → AI 分诊 → 质量门 → 中文详解深读 → 双语 digest → 钉钉精简版 + 本地完整版）
+- **P1 尺子（eval）** ✅ 已完成（离线 `radar --mode eval`：忠实度 eval + 排序 eval + 报告/趋势）
 - **P2 懂你（记忆 + 个性化）** 🔜 下一步（SQLite FTS5 + USER.md + LLM 选择，非向量；对他已会主题降权）
-- **P2 对话式 agent** 📋（项目根 CLAUDE.md 操作手册 + 对话中提取记忆 + 改自己的配置）
-- **P3 skill 自创建 + 周度 evolve + eval 冻结基准** 📋
-- **P4 自指闭环** 📋（把读到的前沿技术 eval-gated 用来升级自己，HITL + git worktree 隔离 A/B + 回归自动回滚）
+- **P3 讲到极致** 📋（批判层诚实标可跳过 + 深度一致 + 正文抓全 + 扩覆盖）
+- **P4 会聊 + 自进化** 📋（对话深挖〔CLAUDE.md 操作手册 + 对话中提取记忆 + 改自己的配置〕；E1 数据级 reviewer〔自相关标注 + eval → 配置/prompt/skill diff → 周报 HITL，窄白名单〕；E2 代码级自指闭环〔把读到的前沿技术 eval-gated 升级自己，git worktree 隔离 A/B + 回归自动回滚 + HITL，远期可选、强护栏〕）
 
 每阶段都可独立交付、可演示。每个组件开工前先做 JIT 前沿调研。详见 [SPEC.md](SPEC.md) 第 12 节。

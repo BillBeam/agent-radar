@@ -45,11 +45,11 @@ launchd（定时） ─> python -m radar --mode daily
    ├─ [1] Fetch        源适配器并行抓取（无 LLM，永远先出候选池）→ data/candidates/{date}.json
    ├─ [2] Triage       claude -p 按主题 rubric 打分/打标签/判自相关（便宜模型）
    ├─ [3] Quality Gate 噪声拒绝 + 相关性硬阈值 + 封顶（可组合规则，宁缺毋滥）
-   ├─ [4] Recall       从记忆检索相关过往推送 + 用户画像        （P1，开发中）
+   ├─ [4] Recall       从记忆检索相关过往推送 + 用户画像        （P2，下一步）
    ├─ [5] Deep-read    拉全文 → Opus 产出中文详解（落原文，反幻觉，并发）
    ├─ [6] Synthesize   双语 digest（精简版 + 完整版）
    ├─ [7] Deliver      钉钉（加签，精简版）+ 本地归档（完整版）+ Mac 通知
-   └─ [8] Remember     写内容记忆 + 更新用户画像              （P1，开发中）
+   └─ [8] Remember     写内容记忆 + 更新用户画像              （P2，下一步）
 ```
 
 **两种运行模式，共享同一套代码与数据**（详见 [docs/SPEC.md](docs/SPEC.md)）：
@@ -109,10 +109,10 @@ env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | **P0** | 每日管线：28 源抓取 → 分诊 → 质量门 → 中文详解 → 双语 digest → 钉钉+本地 | ✅ 已跑通 |
-| **P1** | 记忆/检索系统（SQLite FTS5 · CJK trigram + USER.md + LLM 选择，不向量），digest 出现「与上周 X 关联」 | 🔜 进行中 |
-| **P2** | Face 2 对话式 agent（`CLAUDE.md` 操作手册 + 对话中提取记忆 + 改自己的配置） | 📋 规划 |
-| **P3** | skill 自创建 + 周度 evolve（reflect/discover/metrics）+ eval 冻结基准 | 📋 规划 |
-| **P4** | 自指闭环：把每天读到的前沿技术 eval-gated 用来升级自己（HITL + 隔离 A/B） | 📋 规划 |
+| **P1** | 尺子（eval）：忠实度 eval + 排序 eval + 报告/趋势（离线 `radar --mode eval`） | ✅ 已完成 |
+| **P2** | 懂你：记忆/检索（SQLite FTS5 · CJK trigram + USER.md + LLM 选择，不向量）+ 个性化（对已会主题降权），digest 出现「与上周 X 关联」 | 🔜 下一步 |
+| **P3** | 讲到极致：批判层诚实标可跳过 + 深度一致 + 正文抓全 + 扩覆盖 | 📋 规划 |
+| **P4** | 会聊 + 自进化：对话深挖（`CLAUDE.md` 操作手册 + 对话提取记忆 + 改自己的配置）；E1 数据级 reviewer（自相关标注+eval→配置/prompt/skill diff→周报 HITL，窄白名单）；E2 代码级自指闭环（前沿技术 eval-gated 升级自己，HITL + worktree 隔离 A/B） | 📋 规划 |
 
 P0 实测：扫 28 源 → 候选 ~130 → 精选 10 → 6 篇 Opus 深读，全程订阅、零报错。
 
