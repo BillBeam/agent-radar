@@ -182,3 +182,15 @@
 3. **按钮 request 回调落点**：`content`（JSON 串）→ `cardPrivateData.params.vote`（建模板时按钮挂 params `{vote: up/down}`）+ `cardPrivateData.actionIds=["up"/"down"]`（actionId）。`_extract_vote` 两条路径都能捞。
 
 **A1 待办（已知缺口，非阻塞 A0）**：BaseText 的 `text.content="${markdown}"` 变量绑定**被搭建器导入时清成 `""`**（`${}` 插值对 BaseText 不生效，正文当前空白）——A1 要换成结构化变量绑定（参考 helloworld 的 Markdown 组件 `content:{valueType:"variable",variable:"markdown"}`）或改用支持 markdown 的组件，让每条目正文+可点标题正常显示；再做 per-item 循环 + 接 `deliver.py` + 投票改票高亮 + markdown 推送默认关 + serve 常驻说明。
+
+---
+
+# Phase A1 · 卡片正文 + per-item + 接入 daily + 入站归一化（A0 收尾）
+
+**正文绑定修法 = 手绑现有变量 + 重发布、不重导入**（用户拍板）：A0 的 `${markdown}` 插值被搭建器清空；A1 **不重新生成/重导入**（怕覆盖已验证的按钮），改由用户在搭建器选中 BaseText → 属性面板「引用变量 → `markdown`」（沿用模板已声明的变量）→ 重发布。**教训：已验证的产物做最小原位改动，别整体重生成覆盖**。`${}` 插值绑定对 BaseText 不生效（被清成 `""`），结构化绑定（`valueType:"variable"`）才是搭建器自己的格式。
+
+**卡片 = 紧凑投票层、markdown 简报 = 阅读层、两者并存（纠正之前"关 markdown"）**：卡片正文是纯文本 `[N] 🆕/📚 标题 — 理由`（`reason` 截 60 / `title` 80 保持紧凑），**不做可点链接**——BaseText 是纯文本组件；可点链接的阅读体验由保留的 markdown 简报承载（本就带链接 + 完整详解）。`CHANNEL_ORDER=["dingtalk","dingtalk_card","local","macos"]`，markdown 先发=先读、卡片后发=投票，靠 `[N]` 对应。
+
+**[N]/🆕📚 是派生不存储 → 卡片自算、且必须按全表算**：`item_numbering(digest.items)` 镜像 `synthesize` 的规范序（`fresh=有 published_at` + `backfill=无` → `fresh+backfill`，位置即 [N]，🆕/📚 由 `published_at`），**在过滤深读项之前**算好——深读项是全表的**非连续子集**，[N] 必须是全表位置才能和简报对齐。`_canonical_order` 在 channel 内自算（同一规则、**不改 synthesize**），结构上保证与简报一致。
+
+**入站归一化契约**：`InboundVote = {date,item_id,vote,user_id}` 是 platform→core 的**唯一**入站契约；`parse_card_callback` 是**唯一**懂钉钉帧的代码，下游 `item_snapshot`+`record_feedback` 只吃归一化字段、不碰帧。将来加平台 = 加一个 parser 产 InboundVote、core 不动。**只此一层，不建多平台抽象**（单用户单平台，多 adapter 网关是过度设计）。

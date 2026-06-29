@@ -1,32 +1,28 @@
-"""DingTalk interactive-card channel — per-item 👍/👎 cards (Phase A).
+"""DingTalk interactive-card channel — per-item 👍/👎 voting cards (Phase A).
 
-Delivers deep-read items as interactive cards to the user 1-on-1 via the robot. A 👍/👎 tap
-fires a `request` callback that — and this is the whole point — routes to the **Stream** long
-connection (caught by `radar --mode serve`), which writes feedback through the SAME
-`record_feedback` as `radar mark`. The markdown `dingtalk` channel stays as a fallback.
+Delivers ONE compact card per deep-read item to the user 1-on-1 via the robot. A 👍/👎 tap fires a
+`request` callback that — and this is the whole point — routes to the **Stream** long connection
+(caught by `radar --mode serve`), which writes feedback through the SAME `record_feedback` as
+`radar mark`. This card is the **voting layer**; the markdown `dingtalk` channel stays on as the
+**reading layer** (clickable links + full 详解). They line up 1:1 via the `[N]` number.
 Secrets come ONLY from env. No proxy (DingTalk is domestic).
 
 API: POST {OAPI}/v1.0/card/instances/createAndDeliver  (卡片平台·创建并投递，高级版)
-  body: cardTemplateId = a template BUILT IN open-dev.dingtalk.com/fe/card AND associated with
-        THIS app at creation time (ends in `.schema`) — the only path whose request-button
-        callback reaches Stream; the old robot interactiveCards/send route black-holes the
-        callback (HTTP only), confirmed by real testing.
+  body: cardTemplateId = a template BUILT IN open-dev.dingtalk.com/fe/card AND associated with THIS
+        app at creation time (ends in `.schema`) — the only path whose request-button callback
+        reaches Stream; the old robot interactiveCards/send route black-holes the callback (HTTP).
         + callbackType="STREAM"  → callback lands on /v1.0/card/instances/callback (registered in serve)
-        + cardData.cardParamMap  → fills the template variables (title/url/reason/status)
-        + openSpaceId="dtv1.card//IM_ROBOT.{userId}" + imRobotOpenDeliverModel{robotCode} → 1v1 push
+        + cardData.cardParamMap  → fills the template's ONE `markdown` variable (string, plain text)
+        + openSpaceId="dtv1.card//im_robot.{userId}" (LOWERCASE) + imRobotOpenDeliverModel{robotCode}
         + outTrackId="{date}:{id}" → ties the click back to the item
 
-The template's variable names MUST match cardParamMap's keys exactly, and its two buttons must be
-`request` actions carrying params {"action":"vote","vote":"up"/"down"} — a silent-failure contract
-(decisions.md). createAndDeliver has NO inline-content mode: the card content lives in the template,
-we only pass variable values.
-
-A0 scope: deliver ONE card (the first deep-read item) to validate the loop end to end. A1 lifts
-the cap to all deep-read items and wires this into deliver.py.
+The template var name MUST match cardParamMap's key (`markdown`) exactly, and its two buttons must be
+`request` actions carrying params {"vote":"up"/"down"} — a silent-failure contract (decisions.md).
+The `markdown` variable carries a PLAIN-TEXT compact line `[N] 🆕/📚 Title — reason` (no clickable
+link: the template's BaseText renders plain text; the markdown brief is the reading layer).
 """
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
 
@@ -40,30 +36,34 @@ _OAPI = "https://api.dingtalk.com"
 _TOKEN_URL = f"{_OAPI}/v1.0/oauth2/accessToken"
 _SEND_URL = f"{_OAPI}/v1.0/card/instances/createAndDeliver"
 _DEGRADE_PREFIX = "（原文"   # deepread's "no body" marker — skip those
+_TITLE_MAX = 80
+_REASON_MAX = 60
 
 
-def _essence(item: Item, limit: int = 120) -> str:
-    return ((item.reason or item.title or "").strip())[:limit]
+def _clip(s: str | None, n: int) -> str:
+    """Trim+cap to n chars with an ellipsis — keep the card a one/two-line scan."""
+    s = (s or "").strip()
+    return (s[: n - 1] + "…") if len(s) > n else s
 
 
-def build_card_param_map(item: Item) -> dict:
-    """The template-variable values (createAndDeliver fills these into the template). Keys MUST
-    match the template's variable names exactly — the A0 template (imported, helloworld-derived)
-    has ONE `markdown` variable: a bold clickable title link + the one-line reason. All values
-    are strings (cardParamMap requires strings). A1 can split this into title/url/reason/status."""
-    title = (item.title or "")[:120]
-    url = item.url or ""
-    reason = _essence(item)
-    head = f"**[{title}]({url})**" if url else f"**{title}**"
-    return {"markdown": f"{head}\n\n{reason}"}
+def build_card_param_map(item: Item, num: int, marker: str) -> dict:
+    """The template's `markdown` variable value (string): the compact voting line
+    `[N] 🆕/📚 Title — reason`. [N] = the item's number in the canonical display order (same as the
+    brief); marker = 🆕 (today-new) / 📚 (backfill). Plain text, kept short (decisions.md: no
+    clickable link — that lives in the markdown reading layer)."""
+    body = f"[{num}] {marker} {_clip(item.title, _TITLE_MAX)}"
+    reason = _clip(item.reason, _REASON_MAX)
+    if reason:
+        body += f" — {reason}"
+    return {"markdown": body}
 
 
-def build_send_request(date: str, item: Item, creds: dict) -> dict:
+def build_send_request(date: str, item: Item, num: int, marker: str, creds: dict) -> dict:
     """Body for /v1.0/card/instances/createAndDeliver (1v1 robot push, STREAM callback).
     outTrackId={date}:{id} ties a click back to the item; the 👍/👎 request buttons live in the
     template (params {"vote": up/down}) and fire the Stream callback. Field shapes verified against
-    DingTalk's own createAndDeliver codegen for this template — note openSpaceId uses LOWERCASE
-    `im_robot` while imRobotOpenDeliverModel.spaceType is UPPERCASE `IM_ROBOT` (silent-fail trap)."""
+    DingTalk's own createAndDeliver codegen — note openSpaceId uses LOWERCASE `im_robot` while
+    imRobotOpenDeliverModel.spaceType is UPPERCASE `IM_ROBOT` (silent-fail trap)."""
     uid = creds["user_id"]
     return {
         "userId": uid,
@@ -71,11 +71,29 @@ def build_send_request(date: str, item: Item, creds: dict) -> dict:
         "cardTemplateId": creds.get("card_template_id"),
         "outTrackId": f"{date}:{item.id}",
         "callbackType": "STREAM",
-        "cardData": {"cardParamMap": build_card_param_map(item)},
+        "cardData": {"cardParamMap": build_card_param_map(item, num, marker)},
         "imRobotOpenDeliverModel": {"spaceType": "IM_ROBOT", "robotCode": creds.get("robot_code")},
         "imRobotOpenSpaceModel": {"supportForward": True},
         "openSpaceId": f"dtv1.card//im_robot.{uid}",
     }
+
+
+def _canonical_order(items: list[Item]) -> list[Item]:
+    """Mirror synthesize.py's display order (fresh first, then backfill) WITHOUT importing/altering
+    synthesize — so a card's [N] equals the brief's [N]. Within each group the input order
+    (rerank / items.json order) is preserved."""
+    fresh = [it for it in items if it.published_at is not None]
+    backfill = [it for it in items if it.published_at is None]
+    return fresh + backfill
+
+
+def item_numbering(items: list[Item]) -> dict:
+    """{item.id: (N, marker)} — N is the 1-based position in the canonical display order, marker is
+    🆕 (today-new, has published_at) / 📚 (backfill, undated). Built from the FULL list so the
+    card's [N]+marker line up 1:1 with the brief, even though the deep-read items that actually get
+    cards are a non-contiguous subset."""
+    return {it.id: (n, "🆕" if it.published_at is not None else "📚")
+            for n, it in enumerate(_canonical_order(items), 1)}
 
 
 def deep_read_items(digest: Digest) -> list[Item]:
@@ -87,7 +105,7 @@ def deep_read_items(digest: Digest) -> list[Item]:
 @register("channel", "dingtalk_card")
 class DingtalkCardChannel(Channel):
     name = "dingtalk_card"
-    a0_one_card = True   # A0: deliver a single card to validate the loop; A1 sets this False
+    a0_one_card = False   # A1: deliver every deep-read item (A0 set this True for the 1-card gate)
 
     def is_enabled(self, config: Any) -> bool:
         return config.channels.dingtalk_card is not None
@@ -103,6 +121,7 @@ class DingtalkCardChannel(Channel):
                          hint="env DINGTALK_CLIENT_ID/SECRET + CARD_TEMPLATE_ID(.schema) + ROBOT_CODE + USER_ID")
             return False
 
+        numbering = item_numbering(digest.items)   # [N]+marker over the FULL list (matches the brief)
         items = deep_read_items(digest)
         if not items:
             ctx.log.warn("dingtalk_card: no deep-read items to deliver")
@@ -120,7 +139,8 @@ class DingtalkCardChannel(Channel):
 
         ok = 0
         for it in items:
-            if self._deliver_one(session, token, creds, digest.date, it, ctx):
+            num, marker = numbering.get(it.id, (0, "🆕"))
+            if self._deliver_one(session, token, creds, digest.date, it, num, marker, ctx):
                 ok += 1
             time.sleep(0.3)
         ctx.log.info("dingtalk_card delivered", cards=ok, attempted=len(items))
@@ -132,9 +152,9 @@ class DingtalkCardChannel(Channel):
         r.raise_for_status()
         return r.json()["accessToken"]
 
-    def _deliver_one(self, session, token, creds, date, item: Item, ctx) -> bool:
+    def _deliver_one(self, session, token, creds, date, item: Item, num: int, marker: str, ctx) -> bool:
         try:
-            r = session.post(_SEND_URL, json=build_send_request(date, item, creds), timeout=20,
+            r = session.post(_SEND_URL, json=build_send_request(date, item, num, marker, creds), timeout=20,
                              headers={"x-acs-dingtalk-access-token": token,
                                       "Content-Type": "application/json"})
             data = r.json() if r.content else {}

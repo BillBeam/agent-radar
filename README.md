@@ -85,6 +85,19 @@ python -m radar --mode daily
 pytest
 ```
 
+### 反馈投票常驻（serve，可选）
+
+每日 digest 会向钉钉机器人单聊投**每条目一张互动卡片**（`[N] 🆕/📚 标题 — 理由` + 👍/👎）。要让点击直接写回反馈，常驻一个 Stream 监听：
+
+```bash
+# 凭证从 env 读（DINGTALK_CLIENT_ID/SECRET/ROBOT_CODE/CARD_TEMPLATE_ID/USER_ID，见本地 .env）。
+# 钉钉是国内服务、Stream 长连接不能走西方代理 → 显式剥代理：
+env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
+# 常驻：nohup … >/tmp/radar-serve.log 2>&1 &  或写一个 launchd plist（macOS 开机自启）
+```
+
+点 👍/👎 → 回调经 Stream 写进 `data/feedback/{date}.json`（与终端 `radar mark` 完全同结构）。卡片是**投票层**、markdown 简报是**阅读层**（带可点链接 + 完整详解），靠 `[N]` 一一对应。
+
 ### 运行机制（为什么不额外计费）
 
 `claude -p` 是 Claude Code 的 headless/print 模式。只要环境里**没有设 `ANTHROPIC_API_KEY`** 且 Claude Code 是订阅登录，这些调用就**走订阅额度、不按 API token 计费**。本项目的 LLM 适配器会主动从子进程环境里剥离 `ANTHROPIC_API_KEY`，确保永远不会静默切到 API 计费。嵌入（P1）用本地模型，也零额外成本。

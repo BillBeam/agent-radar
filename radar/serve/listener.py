@@ -24,6 +24,14 @@ from ..obs import Logger
 
 _VOTES = ("up", "down")
 
+# ── Inbound contract ──────────────────────────────────────────────────────────────────────────
+# The ONLY thing that crosses from "platform" into "core" is a normalized vote event:
+#     InboundVote = {"date": str, "item_id": str, "vote": "up"|"down", "user_id": str|None}
+# `parse_card_callback` is the SOLE DingTalk-frame-aware code; everything downstream (item_snapshot,
+# record_feedback) works off this dict, never a raw frame. Adding another platform later = add one
+# parser that emits InboundVote — core stays untouched. (No multi-platform abstraction beyond this.)
+_INBOUND_KEYS = ("date", "item_id", "vote", "user_id")
+
 
 def _extract_vote(content) -> Optional[str]:
     """Find the up/down vote across the shapes a `actionType:request` + `value` button can
@@ -53,10 +61,11 @@ def _extract_vote(content) -> Optional[str]:
 
 
 def parse_card_callback(data: dict) -> Optional[dict]:
-    """A card actionCallback payload → {date, item_id, vote, user_id}, or None if not a 👍/👎.
+    """The platform→core boundary: a card actionCallback payload → an **InboundVote**
+    {date, item_id, vote, user_id} (see _INBOUND_KEYS), or None if it's not a 👍/👎.
     outTrackId is '{date}:{item_id}'; the vote is recovered by _extract_vote (robust to the
     request/value button shape). Accepts both raw frame keys and the normalized ones from
-    _normalize_callback (outTrackId/content/userId)."""
+    _normalize_callback (outTrackId/content/userId). This is the ONLY DingTalk-aware function."""
     if not isinstance(data, dict):
         return None
     out_track_id = data.get("outTrackId") or ""

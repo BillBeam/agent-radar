@@ -1,11 +1,14 @@
 """Dev/ops: re-deliver an existing digest's interactive cards WITHOUT re-running the pipeline.
 
-A0 self-prove + A1 testing. Loads {date}.items.json, rebuilds the Digest, and calls the
-dingtalk_card channel's send() (A0 = one card). Needs the DingTalk env creds set.
+A1 self-prove: loads {date}.items.json, rebuilds the full Digest, and calls the dingtalk_card
+channel's send() — which delivers ONE card per deep-read item, each numbered [N]+🆕/📚 to match the
+markdown brief. Needs the DingTalk env creds set.
 
-    DINGTALK_CLIENT_ID=... DINGTALK_CLIENT_SECRET=... DINGTALK_USER_ID=... \
-    DINGTALK_CARD_TEMPLATE_ID=... DINGTALK_ROBOT_CODE=... \
+    set -a; . ./.env; set +a
     python scripts/deliver_cards.py 2026-06-26
+
+Note: outTrackId is stable ({date}:{id}); an item already delivered keeps its old card (DingTalk
+ignores cardData changes on a reused outTrackId). Not-yet-delivered items render fresh.
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ from radar.core.models import Digest, Item, RunContext, TimeWindow
 from radar.obs import Logger, Tracer
 
 
-def main(date: str, index: int = 0) -> int:
+def main(date: str) -> int:
     registry.load_adapters()
     config = load_config()
     if config.channels.dingtalk_card is None:
@@ -28,21 +31,13 @@ def main(date: str, index: int = 0) -> int:
     if not raw:
         print(f"no digest items for {date} (data/digests/{date}.items.json)")
         return 1
-    digest = Digest(date=date, items=[Item(**it) for it in raw])
+    digest = Digest(date=date, items=[Item(**it) for it in raw])   # full list → correct [N] per card
 
-    # pick the index-th deep-read item to deliver — a different item => a fresh outTrackId
-    # ({date}:{id}), so re-testing renders a brand-new card instead of reusing the prior one
-    from radar.channels.dingtalk_card import deep_read_items
-    dr = deep_read_items(digest)
-    if dr:
-        pick = dr[index % len(dr)]
-        digest.items = [pick]
-        print(f"delivering deep-read item #{index % len(dr)}: {pick.title[:70]!r}")
-
-    ctx = RunContext(run_id="a0-deliver", mode="daily", config=config, window=TimeWindow(48))
-    ctx.log = Logger("a0-deliver", log_path=Paths.state / "radar.log", echo=True)
-    ctx.trace = Tracer("a0-deliver")
-    from radar.channels.dingtalk_card import DingtalkCardChannel
+    from radar.channels.dingtalk_card import DingtalkCardChannel, deep_read_items
+    print(f"delivering {len(deep_read_items(digest))} per-item card(s) for {date} (one per deep-read item)")
+    ctx = RunContext(run_id="a1-deliver", mode="daily", config=config, window=TimeWindow(48))
+    ctx.log = Logger("a1-deliver", log_path=Paths.state / "radar.log", echo=True)
+    ctx.trace = Tracer("a1-deliver")
     ok = DingtalkCardChannel().send(digest, ctx)
     ctx.log.close()
     print("✅ delivered — check DingTalk" if ok else "❌ delivery failed (see warnings above)")
@@ -50,6 +45,4 @@ def main(date: str, index: int = 0) -> int:
 
 
 if __name__ == "__main__":
-    _date = sys.argv[1] if len(sys.argv) > 1 else "2026-06-26"
-    _idx = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-    raise SystemExit(main(_date, _idx))
+    raise SystemExit(main(sys.argv[1] if len(sys.argv) > 1 else "2026-06-26"))

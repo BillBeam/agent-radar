@@ -11,7 +11,9 @@ from ..core.models import RunContext
 from ..core.ports import Stage
 from ..core.registry import register
 
-CHANNEL_ORDER = ["dingtalk", "local", "macos"]
+# dingtalk = markdown reading layer (sent first), dingtalk_card = per-item 👍/👎 voting layer
+# (sent right after); they line up via [N]. Both are independently gated by is_enabled().
+CHANNEL_ORDER = ["dingtalk", "dingtalk_card", "local", "macos"]
 SEEN_RETENTION_DAYS = 60
 
 

@@ -17,22 +17,49 @@ def _item(**kw):
 # ---------------- outbound: createAndDeliver body ----------------
 def test_build_card_param_map():
     from radar.channels.dingtalk_card import build_card_param_map
-    m = build_card_param_map(_item(id="abc", title="Hi", url="http://x", reason="一句话理由"))
-    assert m == {"markdown": "**[Hi](http://x)**\n\n一句话理由"}   # one markdown var: title-link + reason
+    m = build_card_param_map(_item(id="abc", title="Hi", reason="一句话理由"), 3, "🆕")
+    assert m == {"markdown": "[3] 🆕 Hi — 一句话理由"}   # plain-text compact line: [N] marker title — reason
     assert all(isinstance(v, str) for v in m.values())        # cardParamMap requires string values
+    # reason is clipped so the card stays a one/two-line scan
+    long = build_card_param_map(_item(title="T", reason="理" * 200), 1, "📚")["markdown"]
+    assert long.startswith("[1] 📚 T — ") and long.endswith("…") and len(long) < 80
 
 
 def test_build_send_request():
     from radar.channels.dingtalk_card import build_send_request
-    body = build_send_request("2026-06-28", _item(id="abc"),
+    body = build_send_request("2026-06-28", _item(id="abc", title="Hi", reason="理由"), 2, "🆕",
                               {"card_template_id": "tpl-uuid.schema", "user_id": "U123", "robot_code": "RC"})
     assert body["cardTemplateId"] == "tpl-uuid.schema"        # app-bound template — the only Stream path
     assert body["outTrackId"] == "2026-06-28:abc"             # ties the click back to the item
     assert body["callbackType"] == "STREAM"                   # → callback reaches /v1.0/card/instances/callback
-    assert "一句话理由" in body["cardData"]["cardParamMap"]["markdown"]   # template variable, not inline content
+    assert body["cardData"]["cardParamMap"]["markdown"] == "[2] 🆕 Hi — 理由"   # [N]+marker+title+reason
     assert body["imRobotOpenDeliverModel"] == {"spaceType": "IM_ROBOT", "robotCode": "RC"}  # uppercase
     assert body["openSpaceId"] == "dtv1.card//im_robot.U123"  # LOWERCASE im_robot (per DingTalk codegen)
     assert body["userId"] == "U123" and body["userIdType"] == 1
+
+
+def test_item_numbering_matches_brief():
+    """[N] + 🆕/📚 derive from the canonical display order (fresh→backfill) over the FULL list, so a
+    card's number equals the brief's — even though deep-read items (which get cards) are a
+    non-contiguous subset."""
+    from datetime import datetime, timezone
+    from radar.channels.dingtalk_card import _canonical_order, deep_read_items, item_numbering
+    dt = datetime(2026, 6, 26, tzinfo=timezone.utc)
+    a = _item(id="a", published_at=dt, explain_zh="详解")        # fresh, deep-read
+    b = _item(id="b", published_at=dt, explain_zh=None)          # fresh, NOT deep-read
+    c = _item(id="c", published_at=None, explain_zh="详解")      # backfill, deep-read
+    items = [a, b, c]
+    assert [it.id for it in _canonical_order(items)] == ["a", "b", "c"]   # fresh then backfill
+    num = item_numbering(items)
+    assert num == {"a": (1, "🆕"), "b": (2, "🆕"), "c": (3, "📚")}
+    digest = Digest(date="2026-06-26", items=items)
+    assert [num[it.id] for it in deep_read_items(digest)] == [(1, "🆕"), (3, "📚")]   # non-contiguous [N]
+
+
+def test_channel_order_card_after_markdown():
+    from radar.stages.deliver import CHANNEL_ORDER
+    assert "dingtalk_card" in CHANNEL_ORDER                                  # wired into daily delivery
+    assert CHANNEL_ORDER.index("dingtalk") < CHANNEL_ORDER.index("dingtalk_card")  # read layer before vote layer
 
 
 def test_deep_read_items_filters():
@@ -75,6 +102,16 @@ def test_parse_card_callback_value_shapes():
     assert parse_card_callback({"outTrackId": "d:i", "content": "garbage"}) is None
     assert parse_card_callback({}) is None
     assert parse_card_callback(None) is None
+
+
+def test_inbound_vote_contract():
+    """The ONLY thing crossing platform→core is the InboundVote {date,item_id,vote,user_id}.
+    record_feedback works off this (+ the snapshot), never a raw DingTalk frame."""
+    from radar.serve.listener import _INBOUND_KEYS, parse_card_callback
+    ev = parse_card_callback({"outTrackId": "2026-06-26:abc", "userId": "U9",
+                              "content": {"cardPrivateData": {"params": {"vote": "up"}}}})
+    assert set(ev) == set(_INBOUND_KEYS) == {"date", "item_id", "vote", "user_id"}
+    assert ev == {"date": "2026-06-26", "item_id": "abc", "vote": "up", "user_id": "U9"}
 
 
 def test_normalize_callback_raw_fallback():
