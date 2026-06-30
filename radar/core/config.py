@@ -32,11 +32,13 @@ class Paths:
     feedback = DATA_DIR / "feedback"
     eval = DATA_DIR / "eval"                    # offline eval reports (P1 尺子)
     deepread_sources = DATA_DIR / "deepread_sources"   # exact grounding text deepread fed the LLM (for faithfulness eval)
+    critic = DATA_DIR / "critic"                # per-item critic verdicts (signal-density sidecar)
     sources_yaml = CONFIG_DIR / "sources.yaml"
     taxonomy_yaml = CONFIG_DIR / "taxonomy.yaml"
     blocklist_yaml = CONFIG_DIR / "blocklist.yaml"
     seen_json = DATA_DIR / "state" / "seen.json"
     first_seen_json = DATA_DIR / "state" / "first_seen.json"
+    deepread_ckpt = DATA_DIR / "state" / "deepread"    # per-item deepread checkpoint dir (crash-resume)
     memory_db = DATA_DIR / "memory.db"
     user_md = ROOT / "USER.md"          # personal profile (gitignored; only USER.example.md is committed)
 
@@ -88,6 +90,7 @@ class ModelsConfig(BaseModel):
     deepread: str = "sonnet"           # grounded 详解
     synthesize: str = "sonnet"
     judge: str = "sonnet"              # offline eval judge (faithfulness / ranking); quality > cost
+    critic: str = "sonnet"             # 批判层「有真料吗」判断；分寸需好判断，≤10 条一次调用很便宜
 
 
 class MemoryConfig(BaseModel):

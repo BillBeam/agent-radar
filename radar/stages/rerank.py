@@ -90,7 +90,7 @@ class RerankStage(Stage):
         user = (preamble
                 + "Rank these candidates best-first per the rubric. Return ONLY the JSON array.\n\n"
                 + "\n".join(lines))
-        data, res = ctx.llm.complete_json(user, system=system, model=ctx.config.models.synthesize)
+        data, res = ctx.llm.complete_json(user, system=system, model=ctx.config.models.synthesize, tag=self.name)
         if not isinstance(data, list) or not data:
             data = salvage_objects(res.text) if res.text else []
         if not isinstance(data, list) or not data:

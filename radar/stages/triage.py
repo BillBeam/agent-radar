@@ -66,7 +66,7 @@ class TriageStage(Stage):
             + "\n".join(lines)
         )
 
-        data, res = ctx.llm.complete_json(user, system=system, model=ctx.config.models.triage)
+        data, res = ctx.llm.complete_json(user, system=system, model=ctx.config.models.triage, tag=self.name)
         if not isinstance(data, list) or not data:
             # one bad element shouldn't nuke the batch — salvage flat objects
             salvaged = salvage_objects(res.text) if res.text else []

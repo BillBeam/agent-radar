@@ -256,3 +256,19 @@
 **测试分工（诚实）**：单测（`tests/test_memory.py`，fake LLM）只锁**接线**（已会清单/tags/同主题标记是否注入进 prompt、toggle off 是否回到基线、store 去重/窗口、缺 USER.md 不崩）；**降权行为**由真 LLM A/B 跑证明，不靠单测。`models.py` 契约零改动。
 
 **真跑结果**（2026-06-30，`data/real-llm-runs/2026-06-30-rerank-personalization-ab.md`，95 测试绿）：已会领域**真前沿全部上浮**（多步 tool-use RL 崩溃 `#1→#0` 未误杀；co-failure/verification-horizon/ShareLock 均浮）、**NOVA harness-eval `#0→#5` 沉**、`why_B` 多处显式以「已会」压分（brain-hands「其已会范式」、memory「命中已会 RAG」）；护栏 **Δτ=-0.267**（预期下掉、非崩塌）。**floor-effect 诚实注**：预期会沉的 harness-design/brain-hands 在基线已垫底（`#7/#9`）→ 被识别为已会但无处再沉、Δ=0。北极星行为达成：系统第一次能区分「对他新」vs「对领域重要」。
+
+---
+
+# Phase C · 讲到极致：批判层（守注意力）+ 深度一致（详解可信）+ 运维硬化
+
+**为什么**：B 解决「对他新」轴（rerank 降权）。C 解决「信号密度 × 可信度」——排序≠过滤：B 排得准，C 把「看着重要实则低信号的」标出来、把「该读的」讲到位。**C 是与 B 正交的叠加层，rerank.py + prompts/rerank.md 全程未动（B 不回退）。**
+
+**① 批判层 = 新 `critic` stage（「有真料吗」轴，与 rerank「对他新」正交）。** 输入 = `ctx.items`（rerank 后 ≤10 决赛项 = deepread 候选附近，**不是 130 全池**，省钱）。verdict 挂 **`ctx.stats["critic"]`**（`Item` 冻结 extra=ignore 装不下；`tags` 会污染 store 的 push_tags→破坏 B 的同主题信号；`reason` 是 brief why——都不能用）+ 旁车 `data/critic/{date}.json`。**v1 标注为主、安全优先**：只**高置信明显垃圾**丢深读名额（deepread `top` 过滤、**不重排** → brief 的 `[N]`/顺序/B 全不动）；borderline 只标注、仍深读；**绝不静默砍单**。`conf` 非法值归一化为 `low`（malformed verdict 永不省 opus，安全）。
+
+**② 深度一致 = 改 `prompts/deepread.md`**：把 ②证据/数据、③局限/失败模式、④新在哪 从「嵌套/可选/缺失」**固化为每篇必给的轴**；加「真但薄→诚实简短不注水」中间档（原仅满详解 vs 一行降级的二元）。
+
+**③ 运维硬化**：per-call trace = 给 `claude_code` 注入 tracer（client 原只持 config+log，没法在内部 emit）+ `time.monotonic` 夹 `_run()` + 4 调用点传 `tag=stage`；`Tracer.event` 加 `threading.Lock`（deepread 3 worker 竞争同一 fh）；per-stage token+延迟汇总进 `last_run.json`。**无 $ 模型**（订阅、剥 KEY）。deepread item checkpoint：仿 faithfulness（`eval/run.py` + `faithfulness.py`），key 折 `prompt_fp=sha1(deepread.md)`——**改 deepread.md 自动失效旧深读**（②③ 天然联动）；`pool.map`→`submit`/`as_completed` 拿逐项 hook、每项完成即 checkpoint，崩溃重跑复用、省 opus。
+
+**真跑自证（2026-06-30，103 测试绿）**：
+- **critic 对抗验收（`data/real-llm-runs/2026-06-30-critic-adversarial.md`）**：真实 10 条全 KEEP（零误标）；**2 条「survey/understanding 标题、实为真前沿」对抗样本全 KEEP（不被标题骗）**；3 条 PR/rehash/空泛 thought-piece 全 SKIP/high、理由准确。「误标=最贵的错」硬关过。
+- **深度一致 + checkpoint + trace（`data/real-llm-runs/2026-06-30-deepread-depth-checkpoint.md`）**：详解四轴（机制/证据/局限/新在哪）齐且扎实（BFCL-V3 具体分、5 条局限、④ 接回他的方向）；复跑 **resumed=3、新 LLM 调用 0 次**（checkpoint 生效）；per-stage trace 一眼定位 **deepread(opus)=712s/52k out 为最贵 stage**。**不回退 B 实证**：`git diff` 显示 rerank.py 本阶唯一改动是观测 `tag=`、prompts/rerank.md 零改动。

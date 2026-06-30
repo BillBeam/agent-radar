@@ -16,6 +16,7 @@ from ..core.models import Digest, Item, RunContext
 from ..core.ports import Stage
 from ..core.registry import register
 from ..core.text import demote_headings, smart_truncate, strip_trailing_date
+from .critic import critic_verdict
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -44,7 +45,7 @@ def _tldr(ctx: RunContext, items: list[Item]) -> str:
               "bullet，每条≤30字，点出今天最值得注意的趋势/突破，不要逐条复述标题。"
               "只输出 markdown bullet：\n\n" + "\n".join(lines))
     res = ctx.llm.complete(prompt, system="你是简洁的科技编辑，只输出要点 bullet。",
-                           model=ctx.config.models.synthesize, timeout=120)
+                           model=ctx.config.models.synthesize, timeout=120, tag="synthesize")
     return res.text.strip() if res.ok else ""
 
 
@@ -63,25 +64,39 @@ def _essence(it: Item, limit: int = 120) -> str:
     return it.reason or ""
 
 
-def _render_full(it: Item, num: int | None = None) -> str:
+def _critic_note(verdict: dict | None) -> str:
+    """Annotation for a 'skippable' verdict, or ''. We annotate — never delete: he still
+    gets the title link + reason and decides for himself (he's the expert)."""
+    if not verdict or not verdict.get("skip"):
+        return ""
+    label = "可跳过" if verdict.get("conf") == "high" else "疑似可跳过"
+    why = (verdict.get("why") or "").strip()
+    return f"⚠️ {label}" + (f" · {why}" if why else "")
+
+
+def _render_full(it: Item, num: int | None = None, verdict: dict | None = None) -> str:
     """Local archive: rich 详解. ### item header (only heading per item — the
     inlined explanation uses bold lines, defensively demoted)."""
     prefix = f"[{num}] " if num else ""
     tags = ("　" + " · ".join(it.tags[:4])) if it.tags else ""
+    note = _critic_note(verdict)
+    note_line = f"> {note}\n\n" if note else ""
     body = (demote_headings(it.explain_zh)
             if (it.explain_zh and not it.explain_zh.startswith(_NO_TEXT_PREFIX))
             else (it.explain_zh or it.reason or ""))
-    return f"### {prefix}[{_title(it)}]({it.url})\n*{it.source_name}*{tags}\n\n{body}\n"
+    return f"### {prefix}[{_title(it)}]({it.url})\n*{it.source_name}*{tags}\n\n{note_line}{body}\n"
 
 
-def _render_brief(it: Item, num: int | None = None) -> str:
+def _render_brief(it: Item, num: int | None = None, verdict: dict | None = None) -> str:
     """DingTalk-safe scannable card: clean title link + one-line why + plain source
     tail + divider. No backticks (DingTalk doesn't render inline code), no score, no ★.
     A small [N] prefix lets you `radar mark <date> N` to thumbs-up/down."""
     prefix = f"[{num}] " if num else ""
     why = (it.reason or _essence(it)).strip()
+    note = _critic_note(verdict)
+    note_line = f"{note}\n" if note else ""
     return (f"**{prefix}[{_title(it)}]({it.url})**\n"
-            f"{why}\n"
+            f"{note_line}{why}\n"
             f"*— {it.source_name}*\n\n---\n")
 
 

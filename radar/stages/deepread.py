@@ -7,15 +7,18 @@ can't be fetched degrade to title+link rather than fabricating. Runs concurrentl
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from ..core.config import Paths
-from ..core.io import atomic_write_json
+from ..core.io import atomic_write_json, read_json
 from ..core.models import Item, RunContext
 from ..core.ports import Stage
 from ..core.registry import register
 from ._article import fetch_article_text
+from .critic import high_conf_skip
 
 MIN_BASIS_CHARS = 200
 NO_TEXT = "（原文正文未能获取，仅标题+链接可读）"
@@ -47,10 +50,34 @@ class DeepReadStage(Stage):
     def run(self, ctx: RunContext) -> None:
         if ctx.llm is None or not ctx.items:
             return
-        top = ctx.items[: ctx.config.deepread_top_k]
         system = Paths.prompts.joinpath("deepread.md").read_text(encoding="utf-8")
+        prompt_fp = hashlib.sha1(system.encode("utf-8")).hexdigest()[:12]
+
+        # critic gate: high-confidence obvious garbage loses its deepread slot (省 opus);
+        # borderline (conf=low) stays. FILTERS the deepread pool only — does NOT touch
+        # ctx.items, so synthesize keeps B's order + [N] (the skipped item still shows in
+        # the brief, annotated 可跳过, just without a 详解).
+        eligible = [it for it in ctx.items if not high_conf_skip(ctx, it)]
+        critic_skipped = len(ctx.items) - len(eligible)
+        top = eligible[: ctx.config.deepread_top_k]
+
+        # checkpoint: a crashed/re-run deepread reuses already-done items (same id + same
+        # prompt). Refining deepread.md changes prompt_fp → everything re-runs with the new
+        # framework (mirrors the faithfulness eval's resume).
+        date = ctx.started_at.astimezone().strftime("%Y-%m-%d")
+        ckpt_path = Paths.deepread_ckpt / f"{date}.json"
+        prior = read_json(ckpt_path) or {}
+        carried = prior.get("items", {}) if prior.get("prompt_fp") == prompt_fp else {}
+        ckpt = {"date": date, "prompt_fp": prompt_fp, "items": dict(carried)}
+        ckpt_lock = threading.Lock()
 
         def work(it: Item) -> None:
+            done = ckpt["items"].get(it.id)
+            if done is not None:                          # resume: skip fetch + LLM
+                it.full_text = done.get("full_text")
+                it.explain_zh = done.get("explain_zh")
+                ctx.bump("deepread.resumed")
+                return
             fetched = ""
             try:
                 fetched = fetch_article_text(it.url, config=ctx.config, max_chars=30000)
@@ -61,24 +88,36 @@ class DeepReadStage(Stage):
             if len(basis) < MIN_BASIS_CHARS:
                 it.explain_zh = NO_TEXT
                 ctx.bump("deepread.no_text")
-                return
-            grounding = basis[:28000]   # the exact source text the LLM sees
-            _write_source_sidecar(ctx, it, grounding)
-            user = (f"标题: {it.title}\n来源: {it.source_name}\n链接: {it.url}\n\n"
-                    f"原文:\n{grounding}")
-            res = ctx.llm.complete(user, system=system,
-                                   model=ctx.config.models.deepread, timeout=360)
-            if res.ok and res.text.strip():
-                it.explain_zh = res.text.strip()
-                ctx.bump("deepread.ok")
             else:
-                it.explain_zh = NO_TEXT
-                ctx.bump("deepread.failed")
-                ctx.log.warn("deepread llm failed", url=it.url, error=(res.error or "")[:120])
+                grounding = basis[:28000]   # the exact source text the LLM sees
+                _write_source_sidecar(ctx, it, grounding)
+                user = (f"标题: {it.title}\n来源: {it.source_name}\n链接: {it.url}\n\n"
+                        f"原文:\n{grounding}")
+                res = ctx.llm.complete(user, system=system,
+                                       model=ctx.config.models.deepread, timeout=360, tag=self.name)
+                if res.ok and res.text.strip():
+                    it.explain_zh = res.text.strip()
+                    ctx.bump("deepread.ok")
+                else:
+                    it.explain_zh = NO_TEXT
+                    ctx.bump("deepread.failed")
+                    ctx.log.warn("deepread llm failed", url=it.url, error=(res.error or "")[:120])
+            with ckpt_lock:                               # checkpoint after each item (crash-resume)
+                ckpt["items"][it.id] = {"explain_zh": it.explain_zh, "full_text": it.full_text}
+                try:
+                    atomic_write_json(ckpt_path, ckpt)
+                except Exception:  # noqa: BLE001 — checkpoint must never break deepread
+                    pass
 
         with ThreadPoolExecutor(max_workers=3) as pool:
-            list(pool.map(work, top))
+            futs = [pool.submit(work, it) for it in top]
+            for fut in as_completed(futs):
+                try:
+                    fut.result()
+                except Exception as e:  # noqa: BLE001 — one item's crash mustn't abort the batch
+                    ctx.log.warn("deepread item crashed", error=repr(e)[:120])
 
         ctx.log.info("deepread", attempted=len(top), ok=ctx.stats.get("deepread.ok", 0),
+                     resumed=ctx.stats.get("deepread.resumed", 0),
                      no_text=ctx.stats.get("deepread.no_text", 0),
-                     failed=ctx.stats.get("deepread.failed", 0))
+                     failed=ctx.stats.get("deepread.failed", 0), critic_skipped=critic_skipped)

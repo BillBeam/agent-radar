@@ -25,7 +25,7 @@ from ..obs import Logger, Tracer
 # stays unregistered for now — rerank reads ctx.memory directly (LEAN, see decisions.md).
 # Unregistered stages are skipped, so the list can name future stages harmlessly.
 DAILY_STAGES = [
-    "fetch", "triage", "quality_gate", "rerank", "recall",
+    "fetch", "triage", "quality_gate", "rerank", "critic", "recall",
     "deepread", "synthesize", "deliver", "remember",
 ]
 
@@ -36,14 +36,15 @@ def new_run_id(mode: str) -> str:
     return f"{stamp}-{mode}-{suffix}"
 
 
-def build_llm(config: RadarConfig, log: Logger):
-    """Instantiate the configured LLM backend, if registered."""
+def build_llm(config: RadarConfig, log: Logger, trace=None):
+    """Instantiate the configured LLM backend, if registered. `trace` (optional) lets the
+    client emit a per-LLM-call event + roll up per-stage tokens/latency for observability."""
     try:
         cls = registry.get("llm", "claude_code")
     except KeyError:
         log.warn("no llm adapter registered yet (claude_code) — LLM stages will no-op")
         return None
-    return cls(config=config, log=log)
+    return cls(config=config, log=log, trace=trace)
 
 
 def build_memory(config: RadarConfig, log: Logger):
@@ -85,7 +86,7 @@ def make_context(mode: str, config: RadarConfig) -> RunContext:
         log=log,
         trace=trace,
     )
-    ctx.llm = build_llm(config, log)
+    ctx.llm = build_llm(config, log, trace)
     ctx.memory = build_memory(config, log)
     return ctx
 
@@ -108,6 +109,7 @@ def _write_last_run(ctx: RunContext) -> None:
         "triage_coverage": ctx.stats.get("triage_coverage"),
         "triage_degraded": ctx.stats.get("triage_degraded", False),
         "tokens": usage,
+        "by_stage": dict(getattr(ctx.llm, "by_stage", {})) if ctx.llm else {},
         "delivered": ctx.stats.get("delivered", {}),
         "errors": ctx.errors[:5],
     }

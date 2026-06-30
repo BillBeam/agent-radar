@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -61,6 +62,7 @@ class Tracer:
     def __init__(self, run_id: str, trace_path: Optional[Path] = None):
         self.run_id = run_id
         self._fh = None
+        self._lock = threading.Lock()   # event() is called from deepread's worker threads
         if trace_path is not None:
             trace_path.parent.mkdir(parents=True, exist_ok=True)
             self._fh = trace_path.open("a", encoding="utf-8")
@@ -69,8 +71,10 @@ class Tracer:
         if self._fh is None:
             return
         rec = {"ts": _ts(), "run_id": self.run_id, "kind": kind, **fields}
-        self._fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-        self._fh.flush()
+        line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"
+        with self._lock:                # thread-safe: deepread fans calls across workers
+            self._fh.write(line)
+            self._fh.flush()
 
     @contextmanager
     def span(self, name: str, **fields: Any) -> Iterator[dict[str, Any]]:

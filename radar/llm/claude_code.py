@@ -26,13 +26,36 @@ _OVERLOAD_MARKERS = ("overloaded", "rate", "429", "529", "529 ")
 
 @register("llm", "claude_code")
 class ClaudeCodeLLM(LLMClient):
-    def __init__(self, config: Optional[RadarConfig] = None, log: Any = None):
+    def __init__(self, config: Optional[RadarConfig] = None, log: Any = None,
+                 trace: Any = None):
         self.config = config
         self.log = log
+        self.trace = trace   # optional Tracer → per-LLM-call events (set by the runner)
         self.bin = shutil.which("claude") or "claude"
         # cumulative token usage across the run (read by runner for last_run.json)
         self.usage_total = {"calls": 0, "input": 0, "output": 0,
                             "cache_read": 0, "cache_creation": 0}
+        # per-stage (tag) roll-up: {tag: {calls,input,output,ms,model}} for last_run.json
+        self.by_stage: dict[str, dict] = {}
+
+    def _record_call(self, model: str, tag: Optional[str], ms: float,
+                     usage: Optional[dict]) -> None:
+        """Per-call observability: roll up (tag → tokens/latency) for last_run.json + emit a
+        per-call trace event. Best-effort — must never break a call. No $ (subscription)."""
+        u = usage or {}
+        ino, out = u.get("input_tokens", 0) or 0, u.get("output_tokens", 0) or 0
+        s = self.by_stage.setdefault(tag or "?", {"calls": 0, "input": 0, "output": 0,
+                                                  "ms": 0.0, "model": model})
+        s["calls"] += 1
+        s["input"] += ino
+        s["output"] += out
+        s["ms"] = round(s["ms"] + ms, 1)
+        if self.trace is not None:
+            try:
+                self.trace.event("llm_call", tag=tag, model=model, ms=ms, input=ino,
+                                 output=out, cache_read=u.get("cache_read_input_tokens", 0) or 0)
+            except Exception:  # noqa: BLE001 — tracing must never break a call
+                pass
 
     def _accumulate(self, usage: Optional[dict]) -> None:
         if not usage:
@@ -76,12 +99,14 @@ class ClaudeCodeLLM(LLMClient):
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
         retries: int = 3,
+        tag: Optional[str] = None,
     ) -> LLMResult:
         model = model or "sonnet"
         timeout = timeout or 240.0
         retries = max(1, retries)
         last_err = "unknown"
         for attempt in range(retries):
+            t0 = time.monotonic()
             try:
                 ok, text, data = self._run(prompt, system, model, timeout)
             except subprocess.TimeoutExpired:
@@ -90,10 +115,12 @@ class ClaudeCodeLLM(LLMClient):
             except Exception as e:  # noqa: BLE001
                 last_err = repr(e)
                 ok, text, data = False, repr(e), None
+            ms = round((time.monotonic() - t0) * 1000, 1)
 
             if ok:
                 usage = (data or {}).get("usage")
                 self._accumulate(usage)
+                self._record_call(model, tag, ms, usage)
                 return LLMResult(text=text, raw=data, usage=usage, model=model, ok=True)
 
             last_err = text
