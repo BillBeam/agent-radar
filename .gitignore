@@ -20,6 +20,10 @@ data/eval/*
 data/deepread_sources/*
 data/self_improve/proposals/*
 data/self_improve/eval_runs/*
+# real-profile A/B / eval runs — derived from the private USER.md, so they leak a
+# professional fingerprint even without direct PII → LOCAL ONLY, never committed.
+# data/real-llm-runs/ itself stays tracked for DESENSITIZED (placeholder-profile) proof.
+data/real-llm-runs/local/
 !data/**/.gitkeep
 *.db
 *.db-wal
