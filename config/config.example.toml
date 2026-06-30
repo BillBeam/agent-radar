@@ -28,12 +28,13 @@ synthesize = "sonnet"
 local = true        # always-on markdown archive under data/digests/
 macos = true        # desktop notification when a digest is ready
 
-# Paste your DingTalk custom-robot webhook here to enable phone push.
-# Create: DingTalk group → 群设置 → 智能群助手 → 添加机器人 → 自定义 → 安全设置=加签.
+# 自定义 webhook 机器人 → 把简报推到一个【群】。可选：若启用下面的 dingtalk_card（企业机器人），
+# 简报已会发到你和机器人的【1v1 单聊】，这段就不必开（开了 = 简报群 + 1v1 都发一份）。
 # [channels.dingtalk]
 # webhook = "https://oapi.dingtalk.com/robot/send?access_token=XXXX"
 # secret  = "SECxxxx"   # the 加签 secret (recommended security mode)
 
-# 投票卡（互动卡片，👍/👎 → serve 写回 feedback）。空段即启用——凭证只从 env 读、
-# 绝不写这里：DINGTALK_CLIENT_ID / SECRET / ROBOT_CODE / CARD_TEMPLATE_ID / USER_ID（见 .env）。
+# 企业自建应用机器人 → 把【阅读层简报 + 投票卡】都发到你的【1v1 单聊】（一个会话搞定，靠 [N] 对应）。
+# 空段即启用——凭证只从 env 读、绝不写这里：
+# DINGTALK_CLIENT_ID / SECRET / ROBOT_CODE / CARD_TEMPLATE_ID / USER_ID（见 .env）。
 # [channels.dingtalk_card]

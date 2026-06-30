@@ -28,6 +28,7 @@ from ..core.registry import register
 _OAPI = "https://api.dingtalk.com"
 _TOKEN_URL = f"{_OAPI}/v1.0/oauth2/accessToken"
 _SEND_URL = f"{_OAPI}/v1.0/card/instances/createAndDeliver"
+_OTO_URL = f"{_OAPI}/v1.0/robot/oToMessages/batchSend"   # enterprise-robot 1v1 markdown (the brief)
 _DEGRADE_PREFIX = "（原文"   # deepread's "no body" marker — skip those
 _REASON_MAX = 70
 
@@ -133,6 +134,7 @@ class DingtalkCardChannel(Channel):
             ctx.log.warn("dingtalk_card token failed", error=repr(e)[:160])
             return False
 
+        self._send_brief(session, token, creds, digest, ctx)   # reading layer → same 1v1, before the card
         ok = self._deliver(session, token, creds, digest.date, rows, ctx)
         ctx.log.info("dingtalk_card list delivered", rows=len(rows), ok=ok)
         return ok
@@ -156,4 +158,33 @@ class DingtalkCardChannel(Channel):
             return False
         except Exception as e:  # noqa: BLE001
             ctx.log.warn("dingtalk_card deliver failed", error=repr(e)[:160])
+            return False
+
+    def _send_brief(self, session, token, creds, digest: Digest, ctx: RunContext) -> bool:
+        """Send the markdown brief to the user's 1v1 via the enterprise robot (OTO sampleMarkdown),
+        so reading + voting both live in ONE chat. Best-effort — a failed brief must not block the
+        card; the full详解 also lives in the local archive."""
+        text = (digest.markdown_brief or digest.markdown or "").strip()
+        if not text:
+            return False
+        body = {
+            "robotCode": creds.get("robot_code"),
+            "userIds": [creds["user_id"]],
+            "msgKey": "sampleMarkdown",
+            "msgParam": json.dumps({"title": f"Agent Radar · {digest.date}", "text": text},
+                                   ensure_ascii=False),
+        }
+        try:
+            r = session.post(_OTO_URL, json=body, timeout=20,
+                             headers={"x-acs-dingtalk-access-token": token,
+                                      "Content-Type": "application/json"})
+            data = r.json() if r.content else {}
+            if r.status_code == 200 and not data.get("code"):
+                ctx.log.info("dingtalk_card brief delivered (1v1 markdown)", chars=len(text))
+                return True
+            ctx.log.warn("dingtalk_card brief rejected", status=r.status_code,
+                         code=data.get("code"), errmsg=data.get("message"), body=(r.text or "")[:300])
+            return False
+        except Exception as e:  # noqa: BLE001
+            ctx.log.warn("dingtalk_card brief failed", error=repr(e)[:160])
             return False

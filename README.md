@@ -99,7 +99,7 @@ launchctl list | grep agentradar            # 确认在跑；日志见 data/stat
 
 ### 反馈投票常驻（serve，可选）
 
-每日 digest 会向钉钉机器人单聊投**一张列表卡**（Loop 渲染，每行 `[N] 🆕/📚 + 中文理由` + 👍/👎；一条消息、顺序固定、不刷屏）。要让点击直接写回反馈，常驻一个 Stream 监听：
+每日 digest 通过钉钉**企业机器人单聊**投两条到同一个 1v1：**阅读层 markdown 简报**（OTO） + **投票层列表卡**（Loop 渲染，每行 `[N] 🆕/📚 + 中文理由` + 👍/👎；顺序固定、不刷屏），靠 `[N]` 一一对应。要让点击直接写回反馈，常驻一个 Stream 监听：
 
 ```bash
 # 凭证从 env 读（DINGTALK_CLIENT_ID/SECRET/ROBOT_CODE/CARD_TEMPLATE_ID/USER_ID，见本地 .env）。
