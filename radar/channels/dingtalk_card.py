@@ -59,14 +59,15 @@ def deep_read_items(digest: Digest) -> list[Item]:
 
 
 def build_items(digest: Digest) -> list[dict]:
-    """The list card's rows — one per deep-read item. Each row is `[N] 🆕/📚 + Chinese reason`
-    (Chinese-first; the English title is dropped — it's clutter for a CN reader and the full
-    title+link live in the markdown brief). [N]/marker over the FULL list (== the brief); vote
-    tokens (`up_<id>` / `down_<id>`) are pre-computed so each row button's actionId carries
-    vote+item_id back. All values are strings (cardParamMap requires strings)."""
+    """The list card's rows — one per item in canonical display order, so the card's `[N]`
+    match the markdown brief 1:1 (contiguous [1..N], not just the deep-read subset — earlier
+    that gapped to [1][2][3][8][9][10] and looked broken). Every item is votable. Each row is
+    `[N] 🆕/📚 + Chinese reason` (Chinese-first; the English title + full link live in the
+    brief). Vote tokens (`up_<id>` / `down_<id>`) ride each button's actionId. All values are
+    strings (cardParamMap requires strings)."""
     numbering = item_numbering(digest.items)
     rows = []
-    for it in deep_read_items(digest):
+    for it in _canonical_order(digest.items):
         num, marker = numbering.get(it.id, (0, "🆕"))
         rows.append({
             "num": str(num),

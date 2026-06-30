@@ -20,11 +20,11 @@ def test_build_items():
     from radar.channels.dingtalk_card import build_items
     dt = datetime(2026, 6, 26, tzinfo=timezone.utc)
     a = _item(id="a", published_at=dt, title="Hi", reason="一句话理由", explain_zh="详解")   # 🆕 deep-read
-    b = _item(id="b", published_at=dt, explain_zh=None)                                       # not deep-read → no row
+    b = _item(id="b", published_at=dt, reason="r-b", explain_zh=None)                          # 🆕 not deep-read — STILL a row
     c = _item(id="c", published_at=None, title="T2", reason="r2", explain_zh="详解")          # 📚 deep-read
     rows = build_items(Digest(date="2026-06-26", items=[a, b, c]))
-    assert [r["num"] for r in rows] == ["1", "3"]                       # full-list [N], non-contiguous
-    assert [r["marker"] for r in rows] == ["🆕", "📚"]
+    assert [r["num"] for r in rows] == ["1", "2", "3"]                  # ALL items, contiguous [N] == the brief
+    assert [r["marker"] for r in rows] == ["🆕", "🆕", "📚"]
     # Chinese-first row (no English title); vote tokens carry vote+item_id back via the actionId
     assert rows[0] == {"num": "1", "marker": "🆕", "reason": "一句话理由",
                        "up_token": "up_a", "down_token": "down_a"}

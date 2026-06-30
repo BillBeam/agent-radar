@@ -33,8 +33,8 @@ def main(date: str) -> int:
         return 1
     digest = Digest(date=date, items=[Item(**it) for it in raw])   # full list → correct [N] per card
 
-    from radar.channels.dingtalk_card import DingtalkCardChannel, deep_read_items
-    print(f"delivering 1 list card with {len(deep_read_items(digest))} rows for {date}")
+    from radar.channels.dingtalk_card import DingtalkCardChannel, build_items
+    print(f"delivering 1 list card with {len(build_items(digest))} rows for {date}")
     ctx = RunContext(run_id="a1-deliver", mode="daily", config=config, window=TimeWindow(48))
     ctx.log = Logger("a1-deliver", log_path=Paths.state / "radar.log", echo=True)
     ctx.trace = Tracer("a1-deliver")
