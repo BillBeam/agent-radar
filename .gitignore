@@ -6,6 +6,8 @@ config.toml
 # local-only operating manual — contains personal/career context; auto-loaded by
 # Claude Code from the working tree, never published (repo is public)
 CLAUDE.md
+# personal reader profile (same treatment as CLAUDE.md) — only USER.example.md is committed
+USER.md
 
 # data / runtime artifacts (keep dir structure via .gitkeep)
 data/candidates/*

@@ -40,7 +40,7 @@
 
 ```
         ┌─────────── 共享 substrate（文件即真相，git 管理）───────────┐
-        │  config/(sources·taxonomy·blocklist) · prompts/ · 记忆(sqlite+vec) │
+        │  config/(sources·taxonomy·blocklist) · prompts/ · 记忆(SQLite FTS5) │
         │  data/digests · skills/(可被自我创建/编辑) · CLAUDE.md(操作手册,P2)  │
         └────────────────────────────────────────────────────────────────┘
             ▲ 读/写                                       ▲ 读/写
@@ -52,6 +52,7 @@
 
 - **Face 1（已实现 P0）**：`launchd` 定时 → `python -m radar --mode daily`。确定性步骤纯 Python；需要「智能」的步骤经 `LLMClient` port → `claude -p`。无人值守。
 - **Face 2（规划 P2）**：用户开一个 Claude Code 会话（`/agent-radar`）跟 agent 讨论今天的内容。它的「理解/讨论/自我修改」= Claude Code 原生能力（读写文件、建 skill、用工具）+ 项目根 `CLAUDE.md` 操作手册约定的协议。同样走订阅。
+  - **消歧**：**Face 2 是贯穿的对话基底机制**（P2 起即可被复用——如对话中提取记忆/改配置）；**面向用户的「会聊深挖」能力作为交付物落在 P4/E**。所以「Face 2」标 P2、「会聊」标 P4 不矛盾。
 
 ## 4. 运行机制（订阅额度，作者问过的关键点）
 
@@ -124,7 +125,7 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 
 **记忆由 harness 持有、喂给 Claude**（LLM 不长期记忆，harness 记），和 Claude Code 的 CLAUDE.md/`memdir` 记忆机制同源。两类：
 - **内容记忆（过往推送）** = **SQLite + FTS5（CJK trigram，他读中文详解）**：存每条推过的条目 + 详解 + 标签 + 日期，`Recall` stage 让 agent 说「延续上周 X / 与 Y 对比 / Z 主题第 N 篇」，串 thread 追踪进展。**复用现成 `data/digests/{date}.items.json` + `state/seen.json`，不重造**；抄 Hermes `hermes_state.py` 的 FTS5 小规模做法。
-- **用户记忆（关于用户）** = **`USER.md`**（人可读、git 友好、对话可编辑）：演化画像（背景、知识水平=英文待提高→中文详解、口味=harness 深度优先、**已会清单**、反馈史）。初值用已知信息播种，靠 Face 2 对话 + 反馈演化；召回靠 **LLM 选择/注入**——抄 CC `memdir` + `findRelevantMemories`（Sonnet 读「文件名+description」manifest 选相关文件，**非向量相似度**）。
+- **用户记忆（关于用户）** = **`USER.md`**（人可读、对话可编辑；**含个人画像 → gitignore，同 CLAUDE.md 待遇，个人/职业上下文不进公开库；仓库只提交 `USER.example.md` 模板；缺失则 rerank 优雅退化为「领域新颖性」，clone 即可跑**）：演化画像（背景、知识水平=英文待提高→中文详解、口味=harness 深度优先、**已会清单**、反馈史）。初值用已知信息播种，靠 Face 2 对话 + 反馈演化；召回靠 **LLM 选择/注入**——抄 CC `memdir` + `findRelevantMemories`（Sonnet 读「文件名+description」manifest 选相关文件，**非向量相似度**）。
 
 **选型 = SQLite + FTS5 + `USER.md` + LLM 选择，不上向量。** 新增 `radar/memory/`(relational/profile) + `recall`/`remember` stage；记忆端口 adapter 边界保留——真要嵌入再加一个 vector adapter，**默认不上**。三条理由（把反 cargo-cult 编进蓝图、防漂回向量栈）：
 1. **两个最相关参照都不用向量做记忆**：CC 用 LLM 选文件（`src/memdir/findRelevantMemories.ts`，全库 grep `embedding|cosine|knn|sqlite-vec` 对记忆零命中）；Hermes 用 FTS5/BM25 + trigram（`hermes_state.py:291/320`）。

@@ -236,3 +236,23 @@
 **④ 清两处诚实债**（代码）：删 `radar/core/ports.py` 的 `LLMClient.complete` `allow_tools` 死参数（+ 实现 `radar/llm/claude_code.py`，grep 确认全仓无 caller）；删 `ports.py` 模块 docstring 里「the memory store」那个**不存在**的端口承诺（记忆端口随①重新定义、本轮不实现）。`pytest` 89 绿。
 
 **记进路线图待办（本轮不实现）**：per-LLM-call trace（prompt 级成本/延迟观测）、deepread item 级 checkpoint（崩溃续跑）、README 整张 P0–P4 表的 P 错位漂移（本轮只去了向量措辞、没动表号，避免半改出双 P2 破表）。
+
+---
+
+# Phase B · P2 冷启动：FTS5 内容记忆 + USER.md 已会清单 → rerank「对他已会主题降权」（北极星第一次落地）
+
+**为什么**：北极星 = 对他个人精确 = 重要性 × **对他的新颖性**。此前 rerank 只判「对领域新」，压不下他已会主题（RAG/harness 构建/brain-hands 解耦/IMA…）的科普。B 让 digest 第一次能看出「已会的沉、对他新的浮」。B 只用**声明的先验**（USER.md 已会清单 + 推送历史），**不吃 👍/👎 反馈**（留 D，避免过早过拟合）。
+
+**① LEAN：不建独立 `recall` stage，rerank 直接查 `ctx.memory`。** 非关键 `recall` stage 一旦静默跳过（`pipeline.py` 降级语义）会**悄悄丢掉降权信号** = 审计点名的「记忆建好没接 rerank」陷阱；「消费即查询点」更稳、且零 `DAILY_STAGES` 改动、`Item.links` 保持死字段。独立 recall + links 叙事留 P3（「延续上周 X」）。
+
+**② 降权信号靠 `push_tags` 精确标签重叠，不靠 FTS5 文本 MATCH。** trigram tokenizer 只对 ≥3 码点生效——已会清单里 `Go`(2)/`解耦`(2) 文本 MATCH 命中不了、`RAG`/`IMA`(3) 边界。所以 `topic_history` 用 taxonomy 受控的标签集重叠（长度无关、无引号陷阱）；`pushes_fts`(trigram) 仅作内容底座（近重复/未来叙事），`CREATE VIRTUAL TABLE` try/except 兜底（某些 sqlite 没编 FTS5 → 退化关系表，B 信号不依赖它）。抄 Hermes `hermes_state.py:319-343` 的 FTS5+触发器范式、缩到单用户小规模。
+
+**③ 已会清单注入 rerank 的分寸（写进 `prompts/rerank.md` + 注入 `user`）：** 降的是「**已会主题的科普/综述/入门/overview**」，**不是**「他主场里的真前沿」——已会主题内的全新实证结果/反直觉/新失败模式/SOTA 仍算「对他新」、照常上浮。**绝不一刀切误杀主场**。代码只提供数据（已会清单 + tags + 同主题×N 标记），**LLM 做语义判断**（科普 vs 真前沿这条分寸只能 LLM 判、不能写成代码规则）。全部 gate 在 `config.memory.personalize_rerank`：toggle off → 与今天逐字节一致（干净 A 侧）。
+
+**④ A/B 自证：主证据 = 条目级 rank-delta，judge 仅当灾难护栏。** P1 排序 eval 的 `independent_judge` 用 transferable-value（领域价值）判据——**正是个性化要偏离的轴**，所以 B 的 τ 掉是**预期、非「更差」**；只用它当护栏（τ 温和=健康降权，崩塌=打乱/误杀）。技巧：judge 内部重排到中性序、对 A/B 盲 → **调一次** judge 得 `judge_ids`，纯 Python `_kendall_tau` 对 A、对 B 各算一次（去掉每侧 judge 噪声 + 绕过「judge 不能原生 A/B」）。反馈成对（feedback_pairwise）此刻样本太少（<MIN_PAIRS）= 非信号，留 D。脚本 `scripts/prove_rerank_personalization.py`。
+
+**⑤ USER.md 隐私：真 `USER.md` gitignore（同 CLAUDE.md），仓库只提交 `USER.example.md` 模板。** 仓库公开、个人/职业画像不进公开库（与「整库脱敏」一贯）。`load_known_topics` 容忍缺失 → 退化为领域新颖性，clone 即可跑。顺手纠正 SPEC §8 旧措辞「USER.md git 收录」。
+
+**测试分工（诚实）**：单测（`tests/test_memory.py`，fake LLM）只锁**接线**（已会清单/tags/同主题标记是否注入进 prompt、toggle off 是否回到基线、store 去重/窗口、缺 USER.md 不崩）；**降权行为**由真 LLM A/B 跑证明，不靠单测。`models.py` 契约零改动。
+
+**真跑结果**（2026-06-30，`data/real-llm-runs/2026-06-30-rerank-personalization-ab.md`，95 测试绿）：已会领域**真前沿全部上浮**（多步 tool-use RL 崩溃 `#1→#0` 未误杀；co-failure/verification-horizon/ShareLock 均浮）、**NOVA harness-eval `#0→#5` 沉**、`why_B` 多处显式以「已会」压分（brain-hands「其已会范式」、memory「命中已会 RAG」）；护栏 **Δτ=-0.267**（预期下掉、非崩塌）。**floor-effect 诚实注**：预期会沉的 harness-design/brain-hands 在基线已垫底（`#7/#9`）→ 被识别为已会但无处再沉、Δ=0。北极星行为达成：系统第一次能区分「对他新」vs「对领域重要」。

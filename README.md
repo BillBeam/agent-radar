@@ -54,7 +54,7 @@ launchd（定时） ─> python -m radar --mode daily
 
 **两种运行模式，共享同一套代码与数据**（详见 [docs/SPEC.md](docs/SPEC.md)）：
 - **Face 1 自动管线**：`launchd` 定时跑，无人值守产出 digest 并推送
-- **Face 2 对话式 agent**（P2，开发中）：开一个 Claude Code 会话跟它讨论今天的内容，对话中它会**提取记忆、改自己的配置、甚至自创建 skill**
+- **Face 2 对话式 agent**（对话基底机制，P2 起即可被复用；面向用户的「会聊深挖」交付能力落在 P4）：开一个 Claude Code 会话跟它讨论今天的内容，对话中它会**提取记忆、改自己的配置、甚至自创建 skill**
 
 > 设计哲学、完整需求、每个组件的实现细节与后续路线，全部在 **[docs/SPEC.md](docs/SPEC.md)**。
 > 一份**真实产出样例**见 **[docs/sample-digest.md](docs/sample-digest.md)**。

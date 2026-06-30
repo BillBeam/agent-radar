@@ -21,7 +21,9 @@ from .models import RunContext, TimeWindow, utcnow
 from .pipeline import Pipeline
 from ..obs import Logger, Tracer
 
-# canonical stage order; memory stages (recall/remember) land in P1
+# canonical stage order. `remember` (P2) writes content memory after deliver; `recall`
+# stays unregistered for now — rerank reads ctx.memory directly (LEAN, see decisions.md).
+# Unregistered stages are skipped, so the list can name future stages harmlessly.
 DAILY_STAGES = [
     "fetch", "triage", "quality_gate", "rerank", "recall",
     "deepread", "synthesize", "deliver", "remember",
@@ -42,6 +44,19 @@ def build_llm(config: RadarConfig, log: Logger):
         log.warn("no llm adapter registered yet (claude_code) — LLM stages will no-op")
         return None
     return cls(config=config, log=log)
+
+
+def build_memory(config: RadarConfig, log: Logger):
+    """Instantiate the content-memory store, if enabled. Never break a run for memory:
+    any failure → None (rerank/remember degrade to non-personalized behavior)."""
+    if not getattr(config, "memory", None) or not config.memory.enabled:
+        return None
+    try:
+        from ..memory.store import MemoryStore
+        return MemoryStore()
+    except Exception as e:  # noqa: BLE001
+        log.warn("memory store unavailable (degrading)", error=repr(e)[:160])
+        return None
 
 
 def build_pipeline(mode: str, ctx: RunContext) -> Pipeline:
@@ -71,6 +86,7 @@ def make_context(mode: str, config: RadarConfig) -> RunContext:
         trace=trace,
     )
     ctx.llm = build_llm(config, log)
+    ctx.memory = build_memory(config, log)
     return ctx
 
 

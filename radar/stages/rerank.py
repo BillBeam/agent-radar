@@ -8,11 +8,35 @@ triage-score order if the LLM is absent/fails.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..core.config import Paths
 from ..core.models import Item, RunContext
 from ..core.ports import Stage
 from ..core.registry import register
 from ..llm._json import salvage_objects
+
+
+def load_known_topics(path) -> str:
+    """Body of the first `## ` section whose heading contains '已会' (up to the next `## `).
+    Returns '' if the file is absent/unreadable or has no such section — a missing or
+    hand-edited USER.md must never break rerank (it just falls back to domain novelty).
+    Dumb + robust on purpose (no YAML / markdown parser)."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return ""
+    out: list[str] = []
+    capturing = False
+    for ln in text.splitlines():
+        if ln.lstrip().startswith("## "):
+            if capturing:
+                break
+            capturing = "已会" in ln
+            continue
+        if capturing:
+            out.append(ln)
+    return "\n".join(out).strip()
 
 
 @register("stage", "rerank")
@@ -43,11 +67,28 @@ class RerankStage(Stage):
 
     def _llm_rank(self, items: list[Item], ctx: RunContext) -> list[Item]:
         system = Paths.prompts.joinpath("rerank.md").read_text(encoding="utf-8")
-        lines = [
-            f"[{i}] ({it.category}|{it.source_name}) {it.title} :: {(it.summary or '')[:160]}"
-            for i, it in enumerate(items)
-        ]
-        user = ("Rank these candidates best-first per the rubric. Return ONLY the JSON array.\n\n"
+        mem = getattr(ctx.config, "memory", None)
+        known = load_known_topics(Paths.user_md) if (mem and mem.personalize_rerank) else ""
+
+        if known:                                    # personalize: enrich lines + add preamble
+            recent_days = mem.recent_days
+            lines = [self._candidate_line(i, it, ctx, recent_days)
+                     for i, it in enumerate(items)]
+            preamble = (
+                "读者（资深 agent/harness 工程师）已掌握下列主题——对这些主题的**科普 / 综述 / "
+                "入门 / overview / best-practices 回顾**大幅降权（他早已懂）；但这些主题里的**全新"
+                "实证结果 / 反直觉发现 / 新失败模式 / SOTA 突破**仍属“对他新”，照常上浮，切勿因"
+                "命中已会领域就一刀切误杀他的主场。\n已会主题：\n" + known + "\n\n"
+            )
+        else:                                        # toggle off / no USER.md → baseline (byte-identical)
+            lines = [
+                f"[{i}] ({it.category}|{it.source_name}) {it.title} :: {(it.summary or '')[:160]}"
+                for i, it in enumerate(items)
+            ]
+            preamble = ""
+
+        user = (preamble
+                + "Rank these candidates best-first per the rubric. Return ONLY the JSON array.\n\n"
                 + "\n".join(lines))
         data, res = ctx.llm.complete_json(user, system=system, model=ctx.config.models.synthesize)
         if not isinstance(data, list) or not data:
@@ -78,6 +119,24 @@ class RerankStage(Stage):
             if i not in seen:
                 order.append(it)
         return order
+
+    def _candidate_line(self, i: int, it: Item, ctx: RunContext, recent_days: int) -> str:
+        line = f"[{i}] ({it.category}|{it.source_name}) {it.title} :: {(it.summary or '')[:160]}"
+        if it.tags:
+            line += f"  〔标签 {' · '.join(it.tags)}〕"
+        marker = self._topic_marker(it, ctx, recent_days)
+        return line + (f"  {marker}" if marker else "")
+
+    def _topic_marker(self, it: Item, ctx: RunContext, recent_days: int) -> str:
+        """'近 N 天同主题×K' if memory has K earlier same-topic pushes; '' otherwise / on error."""
+        if ctx.memory is None:
+            return ""
+        try:
+            hist = ctx.memory.topic_history(it, recent_days)
+            count = int(hist.get("count", 0)) if isinstance(hist, dict) else 0
+        except Exception:  # noqa: BLE001 — memory is best-effort, never break ranking
+            return ""
+        return f"⟨近{recent_days}天同主题×{count}⟩" if count else ""
 
     def _select_diverse(self, ranked: list[Item], ctx: RunContext, n: int) -> list[Item]:
         """Greedy top-down pick honoring a per-source cap; relax to fill if short."""

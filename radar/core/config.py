@@ -38,6 +38,7 @@ class Paths:
     seen_json = DATA_DIR / "state" / "seen.json"
     first_seen_json = DATA_DIR / "state" / "first_seen.json"
     memory_db = DATA_DIR / "memory.db"
+    user_md = ROOT / "USER.md"          # personal profile (gitignored; only USER.example.md is committed)
 
 
 class DingtalkConfig(BaseModel):
@@ -89,6 +90,14 @@ class ModelsConfig(BaseModel):
     judge: str = "sonnet"              # offline eval judge (faithfulness / ranking); quality > cost
 
 
+class MemoryConfig(BaseModel):
+    """P2 content memory + personalization. Local SQLite (FTS5), no vectors, no extra API cost."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True                  # build the MemoryStore + run the `remember` stage
+    personalize_rerank: bool = True       # inject USER.md 已会清单 into rerank (the A/B switch)
+    recent_days: int = 30                 # window for the "近 N 天同主题已推过" down-weight signal
+
+
 class RadarConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -111,6 +120,7 @@ class RadarConfig(BaseModel):
 
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
     def window_hours(self, mode: str) -> float:
         return self.weekly_freshness_hours if mode == "weekly" else self.freshness_hours
