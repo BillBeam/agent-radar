@@ -85,6 +85,18 @@ python -m radar --mode daily
 pytest
 ```
 
+### 无人值守每天跑（launchd）
+
+让它每天自动跑 + 投票实时接住，两个 launchd agent 一键装好（`com.agentradar.daily` 定时 + `com.agentradar.serve` 常驻）：
+
+```bash
+# .env 里加一行代理（无人值守 daily 抓西方源用）：HTTPS_PROXY=http://<代理>:<端口>
+bash scripts/install-launchd.sh both        # 生成并加载（plist 自动填本仓库绝对路径）
+launchctl list | grep agentradar            # 确认在跑；日志见 data/state/launchd-*.log
+```
+
+完整说明（代理处理、改时间、cron 替代、卸载）见 **[deploy/README.md](deploy/README.md)**。
+
 ### 反馈投票常驻（serve，可选）
 
 每日 digest 会向钉钉机器人单聊投**一张列表卡**（Loop 渲染，每行 `[N] 🆕/📚 + 中文理由` + 👍/👎；一条消息、顺序固定、不刷屏）。要让点击直接写回反馈，常驻一个 Stream 监听：
@@ -93,7 +105,8 @@ pytest
 # 凭证从 env 读（DINGTALK_CLIENT_ID/SECRET/ROBOT_CODE/CARD_TEMPLATE_ID/USER_ID，见本地 .env）。
 # 钉钉是国内服务、Stream 长连接不能走西方代理 → 显式剥代理：
 env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
-# 常驻：nohup … >/tmp/radar-serve.log 2>&1 &  或写一个 launchd plist（macOS 开机自启）
+# 常驻：上面 launchd 的 com.agentradar.serve 已做这件事（KeepAlive + 开机自启，见 deploy/README.md）；
+# 临时挂后台也可：nohup bash scripts/run-serve.sh >data/state/serve.log 2>&1 &
 ```
 
 点 👍/👎 → 回调经 Stream 写进 `data/feedback/{date}.json`（与终端 `radar mark` 完全同结构）。卡片是**投票层**、markdown 简报是**阅读层**（带可点链接 + 完整详解），靠 `[N]` 一一对应。

@@ -53,10 +53,11 @@ class DeepReadStage(Stage):
         system = Paths.prompts.joinpath("deepread.md").read_text(encoding="utf-8")
         prompt_fp = hashlib.sha1(system.encode("utf-8")).hexdigest()[:12]
 
-        # critic gate: high-confidence obvious garbage loses its deepread slot (省 opus);
-        # borderline (conf=low) stays. FILTERS the deepread pool only — does NOT touch
-        # ctx.items, so synthesize keeps B's order + [N] (the skipped item still shows in
-        # the brief, annotated 可跳过, just without a 详解).
+        # critic gate: high-confidence obvious garbage yields its deepread slot to the
+        # next-better item — deepread still does top_k (a quality SWAP, NOT a saving; opus
+        # is only saved at the boundary when eligible < top_k). borderline (conf=low) stays.
+        # FILTERS the deepread pool only — does NOT touch ctx.items, so synthesize keeps B's
+        # order + [N] (the skipped item still shows in the brief, annotated 可跳过, no 详解).
         eligible = [it for it in ctx.items if not high_conf_skip(ctx, it)]
         critic_skipped = len(ctx.items) - len(eligible)
         top = eligible[: ctx.config.deepread_top_k]

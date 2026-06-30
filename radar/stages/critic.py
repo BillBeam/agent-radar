@@ -6,7 +6,8 @@ clickbait, no-data thought-pieces, second-hand). v1 is annotation-first + safe:
 - runs on the **≤10 selected finalists** (`ctx.items`, post-rerank) — NOT the triage pool.
 - verdicts land on `ctx.stats["critic"]` (Item is frozen; `tags` would corrupt the memory
   signal; `reason` is the brief why).
-- only HIGH-confidence obvious garbage loses its deepread slot (deepread reads the dict);
+- only HIGH-confidence obvious garbage yields its deepread slot to the next-better item
+  (deepread reads the dict; a quality SWAP, not a cost saving — see high_conf_skip);
   borderline is annotated but STILL deep-read. Never silently cut — he's the expert.
 Degrades to a no-op if the LLM is absent/fails (no annotation, deepread unchanged).
 """
@@ -33,7 +34,9 @@ def critic_verdict(ctx: RunContext, item: Item) -> dict:
 
 
 def high_conf_skip(ctx: RunContext, item: Item) -> bool:
-    """High-confidence obvious garbage → safe to skip the expensive deepread (省 opus).
+    """High-confidence obvious garbage → drop it from the deepread pool. NOTE: a quality
+    SWAP, not a cost saving — deepread still does top_k; the garbage just yields its slot to
+    the next-better item (opus is only saved at the boundary when eligible < top_k).
     Borderline (conf=low) is NEVER skipped — only annotated + still deep-read."""
     v = critic_verdict(ctx, item)
     return bool(v.get("skip") and v.get("conf") == "high")

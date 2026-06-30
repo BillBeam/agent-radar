@@ -181,3 +181,23 @@ def test_per_call_trace_records_event_and_rollup():
 def test_tracer_is_thread_locked():
     from radar.obs import Tracer
     assert hasattr(Tracer("t"), "_lock")
+
+
+# ---- integration: skip verdict actually surfaces as ⚠️ in the rendered digest ----
+def test_synthesize_emits_critic_annotation(tmp_path, monkeypatch):
+    """Catches the _emit → _render wiring (the unit test checks _render_brief in isolation;
+    a real daily exposed that _emit wasn't passing the verdict through)."""
+    from datetime import datetime, timezone
+    from radar.stages.synthesize import SynthesizeStage
+    monkeypatch.setattr(Paths, "digests", tmp_path / "digests")
+    ctx = _ctx()
+    ctx.llm = FakeLLM(text="今日要点")                      # for the TL;DR call
+    now = datetime.now(timezone.utc)
+    good = _item(title="Good", url="http://x/good"); good.published_at = now; good.explain_zh = "详解正文"
+    pr = _item(title="PR", url="http://x/pr"); pr.published_at = now; pr.reason = "厂商发布稿"
+    ctx.items = [good, pr]
+    ctx.stats["critic"] = {pr.id: {"skip": True, "conf": "high", "why": "厂商发布稿，无技术实质"}}
+    SynthesizeStage().run(ctx)
+    note = "⚠️ 可跳过 · 厂商发布稿，无技术实质"
+    assert note in ctx.digest.markdown_brief and note in ctx.digest.markdown
+    assert ctx.digest.markdown_brief.count("⚠️") == 1       # only the skip item, not the good one

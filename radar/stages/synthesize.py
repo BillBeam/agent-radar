@@ -166,8 +166,9 @@ class SynthesizeStage(Stage):
                 brief_parts.append(f"\n## {heading}\n")
             for it in group:  # rank order within group; numbering follows display order
                 num = number_of[id(it)]
-                full_parts.append(_render_full(it, num))
-                brief_parts.append(_render_brief(it, num))
+                v = critic_verdict(ctx, it)   # critic's 可跳过 verdict (neutral if critic didn't run)
+                full_parts.append(_render_full(it, num, v))
+                brief_parts.append(_render_brief(it, num, v))
 
         if backfill:  # only label when there's a contrast to draw
             _emit(fresh, "🆕 今日新增")

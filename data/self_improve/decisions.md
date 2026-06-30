@@ -263,7 +263,7 @@
 
 **为什么**：B 解决「对他新」轴（rerank 降权）。C 解决「信号密度 × 可信度」——排序≠过滤：B 排得准，C 把「看着重要实则低信号的」标出来、把「该读的」讲到位。**C 是与 B 正交的叠加层，rerank.py + prompts/rerank.md 全程未动（B 不回退）。**
 
-**① 批判层 = 新 `critic` stage（「有真料吗」轴，与 rerank「对他新」正交）。** 输入 = `ctx.items`（rerank 后 ≤10 决赛项 = deepread 候选附近，**不是 130 全池**，省钱）。verdict 挂 **`ctx.stats["critic"]`**（`Item` 冻结 extra=ignore 装不下；`tags` 会污染 store 的 push_tags→破坏 B 的同主题信号；`reason` 是 brief why——都不能用）+ 旁车 `data/critic/{date}.json`。**v1 标注为主、安全优先**：只**高置信明显垃圾**丢深读名额（deepread `top` 过滤、**不重排** → brief 的 `[N]`/顺序/B 全不动）；borderline 只标注、仍深读；**绝不静默砍单**。`conf` 非法值归一化为 `low`（malformed verdict 永不省 opus，安全）。
+**① 批判层 = 新 `critic` stage（「有真料吗」轴，与 rerank「对他新」正交）。** 输入 = `ctx.items`（rerank 后 ≤10 决赛项 = deepread 候选附近，**不是 130 全池**，省钱）。verdict 挂 **`ctx.stats["critic"]`**（`Item` 冻结 extra=ignore 装不下；`tags` 会污染 store 的 push_tags→破坏 B 的同主题信号；`reason` 是 brief why——都不能用）+ 旁车 `data/critic/{date}.json`。**v1 标注为主、安全优先**：只**高置信明显垃圾让出深读名额给下一个更好的项**（deepread `top` 过滤、**不重排** → brief 的 `[N]`/顺序/B 全不动；**换不是省**，见下方日跑准备的纠正）；borderline 只标注、仍深读；**绝不静默砍单**。`conf` 非法值归一化为 `low`（malformed verdict 永不触发误跳过，安全）。
 
 **② 深度一致 = 改 `prompts/deepread.md`**：把 ②证据/数据、③局限/失败模式、④新在哪 从「嵌套/可选/缺失」**固化为每篇必给的轴**；加「真但薄→诚实简短不注水」中间档（原仅满详解 vs 一行降级的二元）。
 
@@ -272,3 +272,15 @@
 **真跑自证（2026-06-30，103 测试绿）**：
 - **critic 对抗验收（`data/real-llm-runs/2026-06-30-critic-adversarial.md`）**：真实 10 条全 KEEP（零误标）；**2 条「survey/understanding 标题、实为真前沿」对抗样本全 KEEP（不被标题骗）**；3 条 PR/rehash/空泛 thought-piece 全 SKIP/high、理由准确。「误标=最贵的错」硬关过。
 - **深度一致 + checkpoint + trace（`data/real-llm-runs/2026-06-30-deepread-depth-checkpoint.md`）**：详解四轴（机制/证据/局限/新在哪）齐且扎实（BFCL-V3 具体分、5 条局限、④ 接回他的方向）；复跑 **resumed=3、新 LLM 调用 0 次**（checkpoint 生效）；per-stage trace 一眼定位 **deepread(opus)=712s/52k out 为最贵 stage**。**不回退 B 实证**：`git diff` 显示 rerank.py 本阶唯一改动是观测 `tag=`、prompts/rerank.md 零改动。
+
+---
+
+# Phase C → 日跑准备：C2 跳过 + 主题串联暂缓 + critic 网关「换不是省」纠正（2026-06-30，他拍板）
+
+**C2 扩源 = 跳过（他拍板）。** 不加中文源——他已靠 X 追国内动态、Radar 定位 = 英文前沿深度，加中文会**稀释最强部分**。网页 Claude 逐行诊断 `config/sources.yaml` 全 33 源：英文核心（harness 工程深度 / arXiv 五类 / coding-agent repos / newsletter / 框架）已很强；剩余英文扩源（LlamaIndex/CrewAI/DSPy/X）都是**边际价值或技术脆弱**（X 无干净 RSS、不硬塞脆弱 scraper）——**没有非加不可的源，不做虚的**。
+
+**主题串联 /「上周第 N 篇」= 暂缓。** 需要**累积的推送历史**才有东西可串、才能真验；记忆现在基本是空的。**留到日跑攒起历史之后再做**。
+
+**critic 网关措辞纠正（认知错误、非 bug，行为本来就对）：** 此前文档写「丢深读名额省 opus」**不准**。实际代码 `eligible = [非高置信skip] → top = eligible[:deepread_top_k]`，**deepread 永远做满 top_k（默认 6）**：正常（决赛 10、skip 少数）是「**垃圾让出名额、下一个更好的项补上**」= **质量提升、换不是省**；**只有 eligible 不足 top_k 的边界**才真省 opus。已把 `critic.py` / `deepread.py` / `CLAUDE.md` / Phase C 条目的措辞全部改对，不留乐观的错误描述。（checkpoint 的「省 opus」是对的：复跑复用→真跳过 LLM。）
+
+**下一步 = 支持每天真实日跑**（launchd 定时 daily + serve 常驻 + 真跑自证），不动管线/B/C/models.py 逻辑。

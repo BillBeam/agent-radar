@@ -33,3 +33,7 @@ macos = true        # desktop notification when a digest is ready
 # [channels.dingtalk]
 # webhook = "https://oapi.dingtalk.com/robot/send?access_token=XXXX"
 # secret  = "SECxxxx"   # the 加签 secret (recommended security mode)
+
+# 投票卡（互动卡片，👍/👎 → serve 写回 feedback）。空段即启用——凭证只从 env 读、
+# 绝不写这里：DINGTALK_CLIENT_ID / SECRET / ROBOT_CODE / CARD_TEMPLATE_ID / USER_ID（见 .env）。
+# [channels.dingtalk_card]
