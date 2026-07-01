@@ -99,7 +99,7 @@ launchctl list | grep agentradar            # 确认在跑；日志见 data/stat
 
 ### 反馈投票常驻（serve，可选）
 
-每日 digest 通过钉钉**企业机器人单聊**投两条到同一个 1v1：**阅读层 markdown 简报**（OTO） + **投票层列表卡**（Loop 渲染，每行 `[N] 🆕/📚 + 中文理由` + 👍/👎；顺序固定、不刷屏），靠 `[N]` 一一对应。要让点击直接写回反馈，常驻一个 Stream 监听：
+每日 digest 通过钉钉**企业机器人单聊**投**一张互动列表卡**：每行 `[N] 🆕/📚 标题 / 中文理由`（含 critic 的 ⚠️可跳过 标注）+ 👍/👎，**阅读+投票同一条消息、顺序固定、不刷屏**。要让点击直接写回反馈，常驻一个 Stream 监听：
 
 ```bash
 # 凭证从 env 读（DINGTALK_CLIENT_ID/SECRET/ROBOT_CODE/CARD_TEMPLATE_ID/USER_ID，见本地 .env）。
@@ -109,7 +109,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
 # 临时挂后台也可：nohup bash scripts/run-serve.sh >data/state/serve.log 2>&1 &
 ```
 
-点 👍/👎 → 回调经 Stream 写进 `data/feedback/{date}.json`（与终端 `radar mark` 完全同结构）。卡片是**投票层**、markdown 简报是**阅读层**（带可点链接 + 完整详解），靠 `[N]` 一一对应。
+点 👍/👎 → 回调经 Stream 写进 `data/feedback/{date}.json`（与终端 `radar mark` 完全同结构）。**阅读+投票折进同一张卡**（每行 title/reason/⚠️ + 投票按钮）；每行数据带 `url`，把行内文本组件的「点击跳转」绑 `${loop.url}` 即可点开原文。完整逐篇详解仍在本地 `data/digests/` 归档。
 
 ### 运行机制（为什么不额外计费）
 

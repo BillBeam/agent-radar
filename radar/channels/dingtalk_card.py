@@ -59,21 +59,29 @@ def deep_read_items(digest: Digest) -> list[Item]:
             if it.explain_zh and not it.explain_zh.startswith(_DEGRADE_PREFIX)]
 
 
-def build_items(digest: Digest) -> list[dict]:
-    """The list card's rows — one per item in canonical display order, so the card's `[N]`
-    match the markdown brief 1:1 (contiguous [1..N], not just the deep-read subset — earlier
-    that gapped to [1][2][3][8][9][10] and looked broken). Every item is votable. Each row is
-    `[N] 🆕/📚 + Chinese reason` (Chinese-first; the English title + full link live in the
-    brief). Vote tokens (`up_<id>` / `down_<id>`) ride each button's actionId. All values are
-    strings (cardParamMap requires strings)."""
+def build_items(digest: Digest, ctx: RunContext | None = None) -> list[dict]:
+    """The list card's rows — one per item in canonical display order (contiguous [1..N]). Each row
+    carries the FULL reading unit so the card stands alone as ONE message (no separate brief):
+    `title` (article title), `reason` (中文一句话, with the critic ⚠️可跳过 folded in when flagged),
+    `url` (bind the title component's 点击跳转 → ${loop.url} in the card-builder for a tappable title),
+    plus `up_/down_` vote tokens. All values are strings (cardParamMap requires strings)."""
     numbering = item_numbering(digest.items)
+    critic = ((getattr(ctx, "stats", None) or {}).get("critic") or {}) if ctx else {}
     rows = []
     for it in _canonical_order(digest.items):
         num, marker = numbering.get(it.id, (0, "🆕"))
+        v = critic.get(it.id) or {}
+        reason = it.reason or ""
+        if v.get("skip"):
+            label = "可跳过" if v.get("conf") == "high" else "疑似可跳过"
+            why = (v.get("why") or "").strip()
+            reason = f"⚠️ {label}" + (f" · {why}" if why else "") + f" · {reason}"
         rows.append({
             "num": str(num),
             "marker": marker,
-            "reason": _clip(it.reason, _REASON_MAX),
+            "title": it.title or "",
+            "reason": _clip(reason, _REASON_MAX),
+            "url": it.url or "",
             "up_token": f"up_{it.id}",
             "down_token": f"down_{it.id}",
         })
@@ -121,9 +129,9 @@ class DingtalkCardChannel(Channel):
                          hint="env DINGTALK_CLIENT_ID/SECRET + CARD_TEMPLATE_ID(.schema) + ROBOT_CODE + USER_ID")
             return False
 
-        rows = build_items(digest)
+        rows = build_items(digest, ctx)
         if not rows:
-            ctx.log.warn("dingtalk_card: no deep-read items to deliver")
+            ctx.log.warn("dingtalk_card: no items to deliver")
             return False
 
         session = requests.Session()
@@ -134,7 +142,7 @@ class DingtalkCardChannel(Channel):
             ctx.log.warn("dingtalk_card token failed", error=repr(e)[:160])
             return False
 
-        self._send_brief(session, token, creds, digest, ctx)   # reading layer → same 1v1, before the card
+        # Reading is folded into each card row (title + reason + ⚠️) → ONE message, no separate brief.
         ok = self._deliver(session, token, creds, digest.date, rows, ctx)
         ctx.log.info("dingtalk_card list delivered", rows=len(rows), ok=ok)
         return ok

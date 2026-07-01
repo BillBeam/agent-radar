@@ -19,16 +19,30 @@ def test_build_items():
     from datetime import datetime, timezone
     from radar.channels.dingtalk_card import build_items
     dt = datetime(2026, 6, 26, tzinfo=timezone.utc)
-    a = _item(id="a", published_at=dt, title="Hi", reason="一句话理由", explain_zh="详解")   # 🆕 deep-read
-    b = _item(id="b", published_at=dt, reason="r-b", explain_zh=None)                          # 🆕 not deep-read — STILL a row
-    c = _item(id="c", published_at=None, title="T2", reason="r2", explain_zh="详解")          # 📚 deep-read
+    a = _item(id="a", published_at=dt, title="Hi", url="http://a", reason="一句话理由", explain_zh="详解")  # 🆕
+    b = _item(id="b", published_at=dt, title="B", url="http://b", reason="r-b", explain_zh=None)  # 🆕 not deep-read — STILL a row
+    c = _item(id="c", published_at=None, title="T2", url="http://c", reason="r2", explain_zh="详解")  # 📚
     rows = build_items(Digest(date="2026-06-26", items=[a, b, c]))
-    assert [r["num"] for r in rows] == ["1", "2", "3"]                  # ALL items, contiguous [N] == the brief
+    assert [r["num"] for r in rows] == ["1", "2", "3"]                  # ALL items, contiguous [N]
     assert [r["marker"] for r in rows] == ["🆕", "🆕", "📚"]
-    # Chinese-first row (no English title); vote tokens carry vote+item_id back via the actionId
-    assert rows[0] == {"num": "1", "marker": "🆕", "reason": "一句话理由",
-                       "up_token": "up_a", "down_token": "down_a"}
+    # each row carries the full reading unit (title + reason + url) → the card stands alone as one message
+    assert rows[0] == {"num": "1", "marker": "🆕", "title": "Hi", "reason": "一句话理由",
+                       "url": "http://a", "up_token": "up_a", "down_token": "down_a"}
     assert all(isinstance(v, str) for r in rows for v in r.values())    # cardParamMap rows are all strings
+
+
+def test_build_items_folds_critic_warning():
+    """A critic skip verdict folds ⚠️可跳过 into the row's reason (the card now carries the annotation
+    the brief used to)."""
+    from datetime import datetime, timezone
+    from radar.channels.dingtalk_card import build_items
+    dt = datetime(2026, 6, 26, tzinfo=timezone.utc)
+    a = _item(id="a", published_at=dt, reason="理由A")
+    b = _item(id="b", published_at=dt, reason="理由B")
+    ctx = type("C", (), {"stats": {"critic": {"a": {"skip": True, "conf": "high", "why": "厂商PR"}}}})()
+    rows = build_items(Digest(date="2026-06-26", items=[a, b]), ctx)
+    assert rows[0]["reason"].startswith("⚠️ 可跳过 · 厂商PR · 理由A")
+    assert not rows[1]["reason"].startswith("⚠️")                       # non-skip untouched
 
 
 def test_send_brief_oto_body():

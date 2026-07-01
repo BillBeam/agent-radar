@@ -32,12 +32,15 @@ def main(date: str) -> int:
         print(f"no digest items for {date} (data/digests/{date}.items.json)")
         return 1
     digest = Digest(date=date, items=[Item(**it) for it in raw])   # full list → correct [N] per card
-
-    from radar.channels.dingtalk_card import DingtalkCardChannel, build_items
-    print(f"delivering 1 list card with {len(build_items(digest))} rows for {date}")
     ctx = RunContext(run_id="a1-deliver", mode="daily", config=config, window=TimeWindow(48))
     ctx.log = Logger("a1-deliver", log_path=Paths.state / "radar.log", echo=True)
     ctx.trace = Tracer("a1-deliver")
+    sc = read_json(Paths.critic / f"{date}.json") or {}            # fold in critic ⚠️可跳过 (live daily has it in ctx.stats)
+    ctx.stats["critic"] = {r["id"]: {"skip": r["skip"], "conf": r["conf"], "why": r.get("why", "")}
+                           for r in sc.get("items", [])}
+
+    from radar.channels.dingtalk_card import DingtalkCardChannel, build_items
+    print(f"delivering 1 list card with {len(build_items(digest, ctx))} rows for {date}")
     ok = DingtalkCardChannel().send(digest, ctx)
     ctx.log.close()
     print("✅ delivered — check DingTalk" if ok else "❌ delivery failed (see warnings above)")
