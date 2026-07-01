@@ -19,15 +19,15 @@ def test_build_items():
     from datetime import datetime, timezone
     from radar.channels.dingtalk_card import build_items
     dt = datetime(2026, 6, 26, tzinfo=timezone.utc)
-    a = _item(id="a", published_at=dt, title="Hi", url="http://a", reason="一句话理由", explain_zh="详解")  # 🆕
-    b = _item(id="b", published_at=dt, title="B", url="http://b", reason="r-b", explain_zh=None)  # 🆕 not deep-read — STILL a row
-    c = _item(id="c", published_at=None, title="T2", url="http://c", reason="r2", explain_zh="详解")  # 📚
+    a = _item(id="a", published_at=dt, url="http://a", reason="一句话理由", explain_zh="详解")  # 🆕
+    b = _item(id="b", published_at=dt, url="http://b", reason="r-b", explain_zh=None)  # 🆕 not deep-read — STILL a row
+    c = _item(id="c", published_at=None, url="http://c", reason="r2", explain_zh="详解")  # 📚
     rows = build_items(Digest(date="2026-06-26", items=[a, b, c]))
     assert [r["num"] for r in rows] == ["1", "2", "3"]                  # ALL items, contiguous [N]
     assert [r["marker"] for r in rows] == ["🆕", "🆕", "📚"]
-    # each row carries the full reading unit (title + reason + url) → the card stands alone as one message
-    assert rows[0] == {"num": "1", "marker": "🆕", "title": "Hi", "reason": "一句话理由",
-                       "url": "http://a", "up_token": "up_a", "down_token": "down_a"}
+    # reason carries the 中文 one-liner + the bare url on its own line (Markdown auto-links it)
+    assert rows[0] == {"num": "1", "marker": "🆕", "reason": "一句话理由\nhttp://a",
+                       "up_token": "up_a", "down_token": "down_a"}
     assert all(isinstance(v, str) for r in rows for v in r.values())    # cardParamMap rows are all strings
 
 
@@ -43,37 +43,6 @@ def test_build_items_folds_critic_warning():
     rows = build_items(Digest(date="2026-06-26", items=[a, b]), ctx)
     assert rows[0]["reason"].startswith("⚠️ 可跳过 · 厂商PR · 理由A")
     assert not rows[1]["reason"].startswith("⚠️")                       # non-skip untouched
-
-
-def test_send_brief_oto_body():
-    """_send_brief posts the markdown brief to the user's 1v1 via the enterprise robot (OTO)."""
-    from radar.channels.dingtalk_card import DingtalkCardChannel, _OTO_URL
-    cap = {}
-
-    class _Resp:
-        status_code = 200
-        content = b"{}"
-        def json(self): return {}
-
-    class _Sess:
-        def post(self, url, **kw):
-            cap["url"], cap["json"] = url, kw.get("json")
-            return _Resp()
-
-    class _Log:
-        def info(self, *a, **k): pass
-        def warn(self, *a, **k): pass
-
-    ctx = type("Ctx", (), {"log": _Log()})()
-    creds = {"robot_code": "RC", "user_id": "U1"}
-    d = Digest(date="2026-06-30", items=[], markdown_brief="**[1] hi**\n理由\n")
-    assert DingtalkCardChannel()._send_brief(_Sess(), "TOK", creds, d, ctx) is True
-    assert cap["url"] == _OTO_URL
-    b = cap["json"]
-    assert b["robotCode"] == "RC" and b["userIds"] == ["U1"] and b["msgKey"] == "sampleMarkdown"
-    assert "理由" in json.loads(b["msgParam"])["text"]
-    empty = Digest(date="2026-06-30", items=[], markdown_brief="")     # empty brief → no send
-    assert DingtalkCardChannel()._send_brief(_Sess(), "TOK", creds, empty, ctx) is False
 
 
 def test_build_list_request(monkeypatch):

@@ -34,8 +34,9 @@ macos = true        # desktop notification when a digest is ready
 # webhook = "https://oapi.dingtalk.com/robot/send?access_token=XXXX"
 # secret  = "SECxxxx"   # the 加签 secret (recommended security mode)
 
-# 企业自建应用机器人 → 一张【互动列表卡】发到你的【1v1 单聊】：每行 [N] 标题/理由(+⚠️可跳过) + 👍/👎，
-# 阅读+投票同一条消息。想让每行点开原文：card-builder 里把行内文本组件的「点击跳转」绑 ${loop.url}。
+# 企业自建应用机器人 → 一张【互动列表卡】发到你的【1v1 单聊】：每行 = [N] 中文理由(+⚠️可跳过)
+# + 可点原文链接(Markdown 组件自动识别裸 URL) + 👍赞｜👎踩 并排(ButtonList)，阅读+投票同一条消息。
+# 卡片模板见 deploy/dingtalk-card-template.json（开发者后台卡片平台「导入」即用，凭证与本卡同一应用）。
 # 空段即启用——凭证只从 env 读、绝不写这里：
 # DINGTALK_CLIENT_ID / SECRET / ROBOT_CODE / CARD_TEMPLATE_ID / USER_ID（见 .env）。
 # [channels.dingtalk_card]

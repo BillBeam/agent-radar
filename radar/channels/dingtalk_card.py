@@ -28,7 +28,6 @@ from ..core.registry import register
 _OAPI = "https://api.dingtalk.com"
 _TOKEN_URL = f"{_OAPI}/v1.0/oauth2/accessToken"
 _SEND_URL = f"{_OAPI}/v1.0/card/instances/createAndDeliver"
-_OTO_URL = f"{_OAPI}/v1.0/robot/oToMessages/batchSend"   # enterprise-robot 1v1 markdown (the brief)
 _DEGRADE_PREFIX = "（原文"   # deepread's "no body" marker — skip those
 _REASON_MAX = 70
 
@@ -60,11 +59,11 @@ def deep_read_items(digest: Digest) -> list[Item]:
 
 
 def build_items(digest: Digest, ctx: RunContext | None = None) -> list[dict]:
-    """The list card's rows — one per item in canonical display order (contiguous [1..N]). Each row
-    carries the FULL reading unit so the card stands alone as ONE message (no separate brief):
-    `title` (article title), `reason` (中文一句话, with the critic ⚠️可跳过 folded in when flagged),
-    `url` (bind the title component's 点击跳转 → ${loop.url} in the card-builder for a tappable title),
-    plus `up_/down_` vote tokens. All values are strings (cardParamMap requires strings)."""
+    """The list card's rows — one per item in canonical display order (contiguous [1..N]), ONE
+    message. The template's Markdown component renders `[${loop.num}] ${loop.marker} ${loop.reason}`,
+    so `reason` carries the 中文一句话 (critic ⚠️可跳过 folded in when flagged) + the article url on
+    its own line — DingTalk's card Markdown auto-links a bare url, but does NOT render `[text](url)`
+    inline links or `**bold**` (both verified on-device). Plus `up_/down_` vote tokens. All strings."""
     numbering = item_numbering(digest.items)
     critic = ((getattr(ctx, "stats", None) or {}).get("critic") or {}) if ctx else {}
     rows = []
@@ -76,12 +75,13 @@ def build_items(digest: Digest, ctx: RunContext | None = None) -> list[dict]:
             label = "可跳过" if v.get("conf") == "high" else "疑似可跳过"
             why = (v.get("why") or "").strip()
             reason = f"⚠️ {label}" + (f" · {why}" if why else "") + f" · {reason}"
+        body = _clip(reason, _REASON_MAX)
+        if it.url:
+            body = f"{body}\n{it.url}"   # bare url on its own line — the Markdown component auto-links it
         rows.append({
             "num": str(num),
             "marker": marker,
-            "title": it.title or "",
-            "reason": _clip(reason, _REASON_MAX),
-            "url": it.url or "",
+            "reason": body,
             "up_token": f"up_{it.id}",
             "down_token": f"down_{it.id}",
         })
@@ -166,33 +166,4 @@ class DingtalkCardChannel(Channel):
             return False
         except Exception as e:  # noqa: BLE001
             ctx.log.warn("dingtalk_card deliver failed", error=repr(e)[:160])
-            return False
-
-    def _send_brief(self, session, token, creds, digest: Digest, ctx: RunContext) -> bool:
-        """Send the markdown brief to the user's 1v1 via the enterprise robot (OTO sampleMarkdown),
-        so reading + voting both live in ONE chat. Best-effort — a failed brief must not block the
-        card; the full详解 also lives in the local archive."""
-        text = (digest.markdown_brief or digest.markdown or "").strip()
-        if not text:
-            return False
-        body = {
-            "robotCode": creds.get("robot_code"),
-            "userIds": [creds["user_id"]],
-            "msgKey": "sampleMarkdown",
-            "msgParam": json.dumps({"title": f"Agent Radar · {digest.date}", "text": text},
-                                   ensure_ascii=False),
-        }
-        try:
-            r = session.post(_OTO_URL, json=body, timeout=20,
-                             headers={"x-acs-dingtalk-access-token": token,
-                                      "Content-Type": "application/json"})
-            data = r.json() if r.content else {}
-            if r.status_code == 200 and not data.get("code"):
-                ctx.log.info("dingtalk_card brief delivered (1v1 markdown)", chars=len(text))
-                return True
-            ctx.log.warn("dingtalk_card brief rejected", status=r.status_code,
-                         code=data.get("code"), errmsg=data.get("message"), body=(r.text or "")[:300])
-            return False
-        except Exception as e:  # noqa: BLE001
-            ctx.log.warn("dingtalk_card brief failed", error=repr(e)[:160])
             return False

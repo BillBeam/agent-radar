@@ -109,7 +109,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
 # 临时挂后台也可：nohup bash scripts/run-serve.sh >data/state/serve.log 2>&1 &
 ```
 
-点 👍/👎 → 回调经 Stream 写进 `data/feedback/{date}.json`（与终端 `radar mark` 完全同结构）。**阅读+投票折进同一张卡**（每行 title/reason/⚠️ + 投票按钮）；每行数据带 `url`，把行内文本组件的「点击跳转」绑 `${loop.url}` 即可点开原文。完整逐篇详解仍在本地 `data/digests/` 归档。
+点 👍/👎 → 回调经 Stream 写进 `data/feedback/{date}.json`（与终端 `radar mark` 完全同结构）。**阅读+投票折进同一张卡**：每行 = 中文理由(+⚠️可跳过) + 可点原文链接（Markdown 组件自动识别裸 URL；钉钉卡片 Markdown 不吃 `[text](url)`/`**bold**`）+ 👍赞｜👎踩 并排（ButtonList）。卡片模板见 `deploy/dingtalk-card-template.json`。完整逐篇详解仍在本地 `data/digests/` 归档。
 
 ### 运行机制（为什么不额外计费）
 
