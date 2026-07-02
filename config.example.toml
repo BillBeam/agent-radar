@@ -32,6 +32,14 @@ macos = true          # desktop notification
 # user_id          = "...."     # your staffId, 1v1 recipient   (or env DINGTALK_USER_ID)
 # robot_code       = "...."     # console → 机器人 → 复制 RobotCode (or env DINGTALK_ROBOT_CODE)
 
+# --- Full 详解 → a private reading PAGE on Cloudflare Pages (card rows link to …/<seg>/#item-N) ---
+# Enabling this makes the card's per-row link open that item's 4-axis 详解 in the browser; it also
+# auto-suppresses [channels.dingtalk_file] (no redundant docx message). The per-day URL is unguessable:
+# seg = HMAC-SHA256(AGENT_RADAR_WEB_SECRET, date) — every page is noindex; data/web/ is gitignored.
+# [channels.web_reader]
+# project_name = "agent-radar"  # your Cloudflare Pages project (create it first) → https://<name>.pages.dev
+# # base_url   = "https://agent-radar.pages.dev"   # optional override (custom domain); else derived from project_name
+
 # =====================================================================================
 # ENV VARS (export these in your shell / a gitignored .env — NEVER commit them):
 #   export DINGTALK_CLIENT_ID=...          # AppKey   of the 企业内部应用「Agent雷达」
@@ -39,4 +47,8 @@ macos = true          # desktop notification
 #   export DINGTALK_ROBOT_CODE=...         # RobotCode (机器人页「复制 RobotCode」)
 #   export DINGTALK_USER_ID=...            # your staffId (or send the bot any message → `serve` logs it)
 #   export DINGTALK_CARD_TEMPLATE_ID=...   # the interactive card template id
+#   # --- web_reader (Cloudflare Pages) — all secrets/ids in env, generate the web secret YOURSELF ---
+#   export CLOUDFLARE_API_TOKEN=...        # Cloudflare → API Tokens → perms: Account · Cloudflare Pages · Edit
+#   export CLOUDFLARE_ACCOUNT_ID=...       # Cloudflare account Overview → Account ID
+#   export AGENT_RADAR_WEB_SECRET=$(openssl rand -hex 32)   # YOU generate it; code only reads it (never logs/persists)
 # =====================================================================================

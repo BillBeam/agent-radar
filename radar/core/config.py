@@ -33,6 +33,7 @@ class Paths:
     eval = DATA_DIR / "eval"                    # offline eval reports (P1 尺子)
     deepread_sources = DATA_DIR / "deepread_sources"   # exact grounding text deepread fed the LLM (for faithfulness eval)
     critic = DATA_DIR / "critic"                # per-item critic verdicts (signal-density sidecar)
+    web = DATA_DIR / "web"                      # generated reading pages (gitignored; deployed to CF Pages)
     sources_yaml = CONFIG_DIR / "sources.yaml"
     taxonomy_yaml = CONFIG_DIR / "taxonomy.yaml"
     blocklist_yaml = CONFIG_DIR / "blocklist.yaml"
@@ -75,12 +76,42 @@ class DingtalkCardConfig(BaseModel):
         return [k for k in keys if not r.get(k)]
 
 
+class WebReaderConfig(BaseModel):
+    """Full 4-axis 详解 → a static reading page on Cloudflare Pages; the voting card links to it.
+    The per-day URL is unguessable: seg = HMAC-SHA256(AGENT_RADAR_WEB_SECRET, date). Secrets
+    (AGENT_RADAR_WEB_SECRET, CLOUDFLARE_API_TOKEN) live in ENV ONLY — never stored here, never
+    logged. project_name/base_url are non-secret and may sit in config.toml OR env (env wins).
+    An empty [channels.web_reader] section + the env vars is enough to enable it."""
+    model_config = ConfigDict(extra="forbid")
+    project_name: Optional[str] = None    # Cloudflare Pages project → https://{project_name}.pages.dev
+    base_url: Optional[str] = None        # override (e.g. a custom domain); else derived from project_name
+
+    def resolved(self) -> dict:
+        """Non-secret config only (env over config). The two secrets are read straight from env at
+        use-site so they never land in this dict (which could otherwise be logged)."""
+        project = os.getenv("CLOUDFLARE_PAGES_PROJECT") or self.project_name
+        base = (os.getenv("AGENT_RADAR_WEB_BASE_URL") or self.base_url
+                or (f"https://{project}.pages.dev" if project else None))
+        return {"project_name": project, "base_url": base.rstrip("/") if base else None,
+                "account_id": os.getenv("CLOUDFLARE_ACCOUNT_ID")}
+
+    def missing(self) -> list[str]:
+        """Which required ids/creds are unset (NAMES only — never values)."""
+        r = self.resolved()
+        need = [] if r["project_name"] else ["project_name"]
+        need += [k for k in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "AGENT_RADAR_WEB_SECRET")
+                 if not os.getenv(k)]
+        return need
+
+
 class ChannelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     local: bool = True                 # always-on local md archive
     macos: bool = True                 # desktop notification
     dingtalk: Optional[DingtalkConfig] = None   # enabled iff webhook provided (markdown push)
     dingtalk_card: Optional[DingtalkCardConfig] = None   # interactive 👍/👎 cards (Phase A)
+    dingtalk_file: bool = True   # full 详解 → docx file to the same 1v1 (reuses card creds)
+    web_reader: Optional[WebReaderConfig] = None   # full 详解 → CF Pages reading page; card links to #item-N
 
 
 class ModelsConfig(BaseModel):

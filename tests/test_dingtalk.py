@@ -213,3 +213,91 @@ def test_run_listener_missing_creds_returns_1(tmp_path, monkeypatch):
     monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
     monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
     assert L.run_listener(RadarConfig()) == 1                        # friendly fail, no SDK needed
+
+
+# ---------------- dingtalk_file: full 详解 → docx (fallback to markdown) ----------------
+def test_dingtalk_file_in_channel_order():
+    from radar.stages.deliver import CHANNEL_ORDER
+    assert "dingtalk_file" in CHANNEL_ORDER
+    assert CHANNEL_ORDER.index("dingtalk_card") < CHANNEL_ORDER.index("dingtalk_file")  # vote card before read file
+
+
+def test_dingtalk_file_gating():
+    from radar.channels.dingtalk_file import DingtalkFileChannel
+    from radar.core.config import RadarConfig, ChannelsConfig, DingtalkCardConfig
+    ch = DingtalkFileChannel()
+    assert ch.is_enabled(RadarConfig()) is False                                       # no card creds/config
+    on = RadarConfig(channels=ChannelsConfig(dingtalk_card=DingtalkCardConfig()))
+    assert ch.is_enabled(on) is True                                                   # card present + toggle default-on
+    off = RadarConfig(channels=ChannelsConfig(dingtalk_card=DingtalkCardConfig(), dingtalk_file=False))
+    assert ch.is_enabled(off) is False                                                 # toggled off
+
+
+def test_dingtalk_file_falls_back_to_markdown(monkeypatch):
+    from radar.channels import dingtalk_file as F
+    from radar.core.config import RadarConfig, ChannelsConfig, DingtalkCardConfig
+    for k, v in {"CLIENT_ID": "cid", "CLIENT_SECRET": "sec", "ROBOT_CODE": "rc", "USER_ID": "u1"}.items():
+        monkeypatch.setenv(f"DINGTALK_{k}", v)
+    calls = []
+
+    class _R:
+        status_code = 200
+        content = b"{}"
+        def __init__(self, j=None): self._j = j or {}
+        def json(self): return self._j
+        def raise_for_status(self): pass
+
+    class _S:
+        trust_env = True
+        def post(self, url, **kw):
+            calls.append((url, kw.get("json")))
+            return _R({"accessToken": "T"}) if "accessToken" in url else _R({})   # OTO sampleMarkdown ok
+
+    def _boom(md): raise RuntimeError("docx boom")                                  # force docx path to fail
+    monkeypatch.setattr(F.requests, "Session", lambda: _S())
+    monkeypatch.setattr("radar.channels._docx_render.markdown_to_docx", _boom)
+
+    class _Log:
+        def info(self, *a, **k): pass
+        def warn(self, *a, **k): pass
+
+    cfg = RadarConfig(channels=ChannelsConfig(dingtalk_card=DingtalkCardConfig()))
+    ctx = type("Ctx", (), {"config": cfg, "log": _Log()})()
+    d = Digest(date="2026-06-30", items=[], markdown="# 详解\n正文一句话。")
+    ok = F.DingtalkFileChannel().send(d, ctx)
+    keys = [(j or {}).get("msgKey") for (_, j) in calls if j]
+    assert ok is True
+    assert "sampleMarkdown" in keys and "sampleFile" not in keys                    # degraded to markdown, docx never sent
+
+
+# ---------------- web_reader retarget: card row link → 详解 page anchor (fallback arxiv) ----------------
+def test_build_items_retargets_link_to_reader_anchor():
+    """web_reader (running first) publishes the day page and sets ctx.stats['reader_url']; each row's
+    link then becomes that item's 详解 anchor {reader_url}#item-N. With no reader_url it stays arxiv."""
+    from datetime import datetime, timezone
+    from radar.channels.dingtalk_card import build_items
+    dt = datetime(2026, 6, 26, tzinfo=timezone.utc)
+    a = _item(id="a", published_at=dt, url="http://arxiv/a", reason="R1")      # 🆕 → [1]
+    b = _item(id="b", published_at=None, url="http://arxiv/b", reason="R2")    # 📚 → [2]
+    digest = Digest(date="2026-06-26", items=[a, b])
+    plain = build_items(digest, type("C", (), {"stats": {}})())               # no reader_url → arxiv
+    assert plain[0]["reason"].endswith("\nhttp://arxiv/a")
+    assert plain[1]["reason"].endswith("\nhttp://arxiv/b")
+    ctx = type("C", (), {"stats": {"reader_url": "https://p.pages.dev/deadbeef/"}})()
+    rows = build_items(digest, ctx)                                            # reader_url → #item-N, [N] preserved
+    assert rows[0]["reason"].endswith("\nhttps://p.pages.dev/deadbeef/#item-1")
+    assert rows[1]["reason"].endswith("\nhttps://p.pages.dev/deadbeef/#item-2")
+
+
+def test_web_reader_runs_before_card():
+    from radar.stages.deliver import CHANNEL_ORDER
+    assert "web_reader" in CHANNEL_ORDER
+    assert CHANNEL_ORDER.index("web_reader") < CHANNEL_ORDER.index("dingtalk_card")  # page deploys before card reads its url
+
+
+def test_dingtalk_file_suppressed_when_web_reader_on():
+    from radar.channels.dingtalk_file import DingtalkFileChannel
+    from radar.core.config import ChannelsConfig, DingtalkCardConfig, RadarConfig, WebReaderConfig
+    both = RadarConfig(channels=ChannelsConfig(dingtalk_card=DingtalkCardConfig(),
+                                               web_reader=WebReaderConfig(project_name="p")))
+    assert DingtalkFileChannel().is_enabled(both) is False                     # web reading page supersedes docx file

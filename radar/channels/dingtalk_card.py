@@ -61,11 +61,15 @@ def deep_read_items(digest: Digest) -> list[Item]:
 def build_items(digest: Digest, ctx: RunContext | None = None) -> list[dict]:
     """The list card's rows — one per item in canonical display order (contiguous [1..N]), ONE
     message. The template's Markdown component renders `[${loop.num}] ${loop.marker} ${loop.reason}`,
-    so `reason` carries the 中文一句话 (critic ⚠️可跳过 folded in when flagged) + the article url on
-    its own line — DingTalk's card Markdown auto-links a bare url, but does NOT render `[text](url)`
-    inline links or `**bold**` (both verified on-device). Plus `up_/down_` vote tokens. All strings."""
+    so `reason` carries the 中文一句话 (critic ⚠️可跳过 folded in when flagged) + a link on its own line
+    — DingTalk's card Markdown auto-links a bare url, but does NOT render `[text](url)` inline links or
+    `**bold**` (both verified on-device). The link points at that item's 详解 reading-page anchor
+    (`{reader_url}#item-N`, set by the web_reader channel which runs first) and gracefully falls back to
+    the arxiv url when web delivery is off/failed. Plus `up_/down_` vote tokens. All strings."""
     numbering = item_numbering(digest.items)
-    critic = ((getattr(ctx, "stats", None) or {}).get("critic") or {}) if ctx else {}
+    stats = (getattr(ctx, "stats", None) or {}) if ctx else {}
+    critic = stats.get("critic") or {}
+    reader_url = stats.get("reader_url")   # …/<seg>/ from web_reader; None ⇒ keep arxiv link
     rows = []
     for it in _canonical_order(digest.items):
         num, marker = numbering.get(it.id, (0, "🆕"))
@@ -76,8 +80,9 @@ def build_items(digest: Digest, ctx: RunContext | None = None) -> list[dict]:
             why = (v.get("why") or "").strip()
             reason = f"⚠️ {label}" + (f" · {why}" if why else "") + f" · {reason}"
         body = _clip(reason, _REASON_MAX)
-        if it.url:
-            body = f"{body}\n{it.url}"   # bare url on its own line — the Markdown component auto-links it
+        link = f"{reader_url}#item-{num}" if reader_url else it.url   # 详解页锚点 → 退回 arxiv 原文
+        if link:
+            body = f"{body}\n{link}"   # bare url on its own line — the Markdown component auto-links it
         rows.append({
             "num": str(num),
             "marker": marker,

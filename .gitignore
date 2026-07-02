@@ -19,6 +19,7 @@ data/state/*
 data/eval/*
 data/deepread_sources/*
 data/critic/*
+data/web/*
 data/self_improve/proposals/*
 data/self_improve/eval_runs/*
 # real-profile A/B / eval runs — derived from the private USER.md, so they leak a

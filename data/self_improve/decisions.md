@@ -284,3 +284,26 @@
 **critic 网关措辞纠正（认知错误、非 bug，行为本来就对）：** 此前文档写「丢深读名额省 opus」**不准**。实际代码 `eligible = [非高置信skip] → top = eligible[:deepread_top_k]`，**deepread 永远做满 top_k（默认 6）**：正常（决赛 10、skip 少数）是「**垃圾让出名额、下一个更好的项补上**」= **质量提升、换不是省**；**只有 eligible 不足 top_k 的边界**才真省 opus。已把 `critic.py` / `deepread.py` / `CLAUDE.md` / Phase C 条目的措辞全部改对，不留乐观的错误描述。（checkpoint 的「省 opus」是对的：复跑复用→真跳过 LLM。）
 
 **下一步 = 支持每天真实日跑**（launchd 定时 daily + serve 常驻 + 真跑自证），不动管线/B/C/models.py 逻辑。
+
+---
+
+# 投递 v3：完整详解上手机 = 网页阅读页（Cloudflare Pages），卡片行锚点点开即读（2026-07-02，他拍板）
+
+**为什么**：逐行审计发现唯一严重偏离初衷的缺口——deepread 的**完整四轴中文详解**（`Item.explain_zh` → `Digest.markdown`）**只落本地归档、从没上他手机**。他读钉钉 = 情报台最贵、最区别于「链接列表」的 payload 读不到。纯投递层，详解**复用现成 `Digest.markdown`、绝不重新生成**（不碰 deepread/synthesize/选择层/B/C/`models.py`）。
+
+**投递形态（绕多轮的血泪结论，别翻案）**：钉钉卡片装不下长文（无文件组件、`sampleFile` 不支持 .md、docx 无 URL）；钉钉文档 raw API 无 markdown 直写（`/contents` 404）、只能逐块写（失真）+ 私有空间未落定 + 第 3 批权限 → 太重太脆，**弃**；独立文件 / 多条消息他明确拒绝（丑、刷屏）。**终选 = 详解渲染成网页阅读页**，投票卡每行链接指向当天页对应锚点 `#item-N` → 扫卡+投票在钉钉、点一行在浏览器顺畅读那篇四轴详解，手机电脑都行、零额外消息。
+
+**隐私 = B 档：不可猜 URL + noindex（他拍板，不做 Access）。** 内容是公开论文详解，敏感点仅「选择指纹」；调研实证 Access **保护不了 `*.pages.dev` 生产主域名**（不拥有该域名），真 Access 要么自备域名、要么走 preview 分支+登录（每次会话可能要在钉钉内输 OTP 验证码），**对低敏内容不值得那摩擦**（这工具命脉是他愿意每天点开）。B 三重防护：① 页 URL = `https://<项目>.pages.dev/{seg}/`，**`seg = HMAC-SHA256(AGENT_RADAR_WEB_SECRET, date)[:32]`** → 不可枚举（无 secret 算不出）、**date 派生=同一天必同一 URL**（重跑幂等、卡片回填稳定、不会跑一次变一个）、**各天单向独立**（分享某天不泄露其它天，优于「静态密钥段+可枚举 date」且免维护 date→url 状态文件）；② 每页 `<meta robots noindex>`；③ `data/web/site/` 进 `.gitignore`、不入公开仓库。
+
+**★ SECRET 铁律（他定死）**：`AGENT_RADAR_WEB_SECRET` 由他本地 `openssl rand -hex 32` 自生成、自放 env；**代码只 `os.environ.get` 读、绝不生成/打印/写进任何文件/日志/本决策**。只有**派生的 `seg`**（能力令牌、单向、本就要进 URL 给卡片/钉钉用）会出现。`web_reader.send` 读 secret→算 seg→`del secret` 立即释放；`resolved()` 只返回非密 ids（无 token、无 web secret）、`missing()` 只报**键名不报值**。`git grep` 自证全仓无 secret 明文、无硬编码长 hex。
+
+**实现接缝（加能力只加文件 + 一处唯一改点）**：
+- **渲染器** `radar/channels/_web_render.py`（`_` 前缀→注册器跳过）：**镜像已验证的 `_docx_render.py` 行解析**（同一套 `_HEADING/_BOLD_LINE/_BULLET/_QUOTE/_LINK/_INLINE`），改吐 HTML+内联 CSS，**零新依赖、保真对标 docx**；识别 `### [N] …`→`<h3 id="item-N">`+建目录；移动优先 CSS、四轴 `**加粗行**`→`<p class="axis">`、critic→`<blockquote>`、`noindex`。**不改 `_docx_render.py` 本身**（保护已验证产物）。
+- **渠道** `radar/channels/web_reader.py`（`@register("channel","web_reader")`）：算 seg→渲染→写 `data/web/site/{seg}/index.html`→`subprocess npx wrangler pages deploy`（生产；CF creds 走**继承的 env**、不上 argv、不 log）→成功则 `ctx.stats["reader_url"]=…/{seg}/`。CF **走公网**（不 `trust_env=False`，区别于钉钉渠道）。
+- **顺序** `deliver.py:CHANNEL_ORDER`：`web_reader` 排到 `dingtalk_card` **之前**→页先部署、URL 进 `ctx.stats`，卡片再读。
+- **卡片回填**（唯一改点 `dingtalk_card.build_items`）：行链接 = `reader_url and f"{reader_url}#item-{num}"` 否则 `it.url`——**`[N]` 编号 `_canonical_order`/`item_numbering` 全不碰**。
+- **配置** `WebReaderConfig`（仿 `DingtalkCardConfig`，密钥 env-only）；`dingtalk_file`（docx）**在 web_reader 启用时 `is_enabled` 自动让位**（免「卡片+多一条 docx 文件消息」的双消息）。
+
+**健壮/幂等**：渲染/写/部署任一步失败 → **不写 `reader_url`** → 卡片每行优雅退回 arxiv 原文（`deliver.py` per-channel try/except 再兜一层）；`npx` 缺失 → 跳过；同一天重跑 seg 稳定、覆盖同页。
+
+**自证（130 测试绿）**：① **真实 2026-06-30 详解离线渲染与 docx 逐项对齐**——日题/分组/条目 =1/3/10、四轴加粗小标题 **58（完全一致）**、标题外链 **10**、critic 引用 1、锚点 `[1..10]` 连续且**目录顺序完全匹配**（`[N]`↔`#item-N` 有保证）、残留 `**`=0、noindex 就位、35538 chars md→48586 chars html；② secret 审计全仓干净。**GATED 待他 CF 账号才能真部署**：手机点开阅读页截图（四轴对标 docx+锚点跳转）+ 端到端卡片 `[N]` 行点开对应那篇 + 部署失败真机退回 arxiv。

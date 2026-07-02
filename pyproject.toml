@@ -14,6 +14,7 @@ dependencies = [
     "requests>=2.31",
     "pypdf>=4.0",            # arXiv full-text PDF fallback (deep-read grounding)
     "dingtalk-stream>=0.24", # Phase A: Stream listener for 👍/👎 card callbacks
+    "python-docx>=1.1",      # full 详解 → .docx file to the 1v1 (lazy import; degrades to markdown)
 ]
 
 [project.optional-dependencies]

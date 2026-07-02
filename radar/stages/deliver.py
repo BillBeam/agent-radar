@@ -11,9 +11,12 @@ from ..core.models import RunContext
 from ..core.ports import Stage
 from ..core.registry import register
 
-# dingtalk = markdown reading layer (sent first), dingtalk_card = per-item 👍/👎 voting layer
-# (sent right after); they line up via [N]. Both are independently gated by is_enabled().
-CHANNEL_ORDER = ["dingtalk", "dingtalk_card", "local", "macos"]
+# web_reader = full 详解 → a CF Pages reading page; it runs BEFORE dingtalk_card so its per-day URL
+# lands in ctx.stats["reader_url"] and the card's per-row link can point at …/<seg>/#item-N (falling
+# back to arxiv if web delivery is off/failed). dingtalk_card = per-item 👍/👎 voting layer;
+# dingtalk_file = full 详解 as a docx file (older reading layer, auto-suppressed when web_reader is on).
+# dingtalk (group markdown) is off by default (no webhook). All independently gated by is_enabled().
+CHANNEL_ORDER = ["dingtalk", "web_reader", "dingtalk_card", "dingtalk_file", "local", "macos"]
 SEEN_RETENTION_DAYS = 60
 
 
