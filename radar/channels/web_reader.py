@@ -88,8 +88,11 @@ class WebReaderChannel(Channel):
             return False
         try:
             proc = subprocess.run(
+                # --branch main = the project's production branch (set via --production-branch at
+                # create) → lands on the STABLE production alias <project>.pages.dev, NOT a git-branch
+                # preview alias (deploying from a repo on `master` would otherwise go to Preview).
                 [npx, "-y", "wrangler", "pages", "deploy", str(Paths.web / "site"),
-                 "--project-name", project, "--commit-dirty=true"],
+                 "--project-name", project, "--branch", "main", "--commit-dirty=true"],
                 cwd=str(Paths.root), capture_output=True, text=True, timeout=_DEPLOY_TIMEOUT,
             )
         except Exception as e:  # noqa: BLE001 — timeout / OSError

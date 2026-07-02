@@ -81,6 +81,29 @@ def test_send_no_reader_url_on_deploy_failure(monkeypatch, tmp_path):
     assert "reader_url" not in ctx.stats                               # → card gracefully keeps arxiv link
 
 
+def test_deploy_targets_production_branch(monkeypatch):
+    """wrangler must deploy with --branch main (the production branch) → stable <project>.pages.dev,
+    not a git-branch preview alias. Regression for the 404 where deploy went to Preview/master."""
+    from radar.channels import web_reader as W
+    captured = {}
+
+    class _P:
+        returncode, stdout, stderr = 0, "", ""
+
+    def _run(argv, **kw):
+        captured["argv"] = argv
+        return _P()
+
+    monkeypatch.setattr(W.shutil, "which", lambda _: "/usr/bin/npx")
+    monkeypatch.setattr(W.subprocess, "run", _run)
+    ok = W.WebReaderChannel()._deploy("agent-radar", _ctx(_enabled()))
+    argv = captured["argv"]
+    assert ok is True
+    assert "pages" in argv and "deploy" in argv
+    assert argv[argv.index("--project-name") + 1] == "agent-radar"
+    assert argv[argv.index("--branch") + 1] == "main"     # production alias, not the master preview
+
+
 def test_send_disabled_when_secret_absent(monkeypatch, tmp_path):
     from radar.channels import web_reader as W
     monkeypatch.setattr(W.Paths, "web", tmp_path)
