@@ -1,8 +1,8 @@
 """arXiv adapter — official export API, category + keyword filtered, recency-sorted.
 
 params:
-  categories: ["cs.AI","cs.CL","cs.MA","cs.SE","cs.LG"]
-  keywords:   ["agent","LLM","language model",...]  # ANDed (any-of) on abstract
+  categories: ["cs.AI","cs.CL","cs.MA","cs.SE"]      # cs.LG dropped (C2): general-ML noise leak
+  keywords:   ["agent","agentic","tool use","MCP",...]  # ANDed (any-of) on abstract; agent-focused
   max_results: 50
 """
 from __future__ import annotations
@@ -15,8 +15,10 @@ from ._base import BaseSource
 from ._feed import parse_feed
 
 API = "http://export.arxiv.org/api/query"
-DEFAULT_CATS = ["cs.AI", "cs.CL", "cs.MA", "cs.SE", "cs.LG"]
-DEFAULT_KEYWORDS = ["agent", "agentic", "LLM", "language model", "tool use", "retrieval"]
+# C2 收紧：cs.LG（通用 ML 大类）去掉 = 模型噪声主漏口；宽词 LLM/language model/reasoning 去掉。
+DEFAULT_CATS = ["cs.AI", "cs.CL", "cs.MA", "cs.SE"]
+DEFAULT_KEYWORDS = ["agent", "agentic", "multi-agent", "tool use", "function calling",
+                    "MCP", "retrieval", "RAG", "agent harness", "planning", "orchestration"]
 
 
 @register("source", "arxiv")

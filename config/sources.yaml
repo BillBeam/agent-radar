@@ -175,8 +175,11 @@ sources:
     url: http://export.arxiv.org/api/query
     weight: 1.1
     params:
-      categories: [cs.AI, cs.CL, cs.MA, cs.SE, cs.LG]
-      keywords: [agent, agentic, LLM, language model, tool use, retrieval, reasoning]
+      # 收紧（C2）：去掉 cs.LG（通用 ML 大类＝可解释性/训练/模型行为的主漏口）；
+      # 去掉宽关键词 LLM/language model/reasoning（几乎沾 LLM 就命中）→ 只留 agent 落点词。
+      # agent-safety/agent 论文几乎必交叉 cs.AI，agent/agentic 关键词兜底存活。
+      categories: [cs.AI, cs.CL, cs.MA, cs.SE]
+      keywords: [agent, agentic, multi-agent, tool use, function calling, MCP, retrieval, RAG, agent harness, planning, orchestration]
       max_results: 50
       max_age_hours: 96   # arXiv announces with ~1-2d lag → wider leash
   - id: hf-daily-papers

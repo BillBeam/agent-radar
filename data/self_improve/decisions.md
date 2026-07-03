@@ -312,3 +312,15 @@
 1. **wrangler 首下超时**：`npx -y wrangler` 首次要下载 wrangler（走公司代理很慢）→ 200s 超时。缓存后正常。**wrangler 自己检测并走 `HTTPS_PROXY`**（启动打印 "Proxy environment variables detected"）——代理不是问题，且 web_reader `_deploy` 继承 env 天然带上代理（CF 是西方站、国内必须走代理，这与钉钉渠道 `trust_env=False` 相反、是对的）。
 2. **preview/production 分支坑（关键）**：`wrangler pages deploy` 不带 `--branch` 时**按本地 git 分支推**（仓库在 `master`）→ 落 **Preview**（`master.agent-radar.pages.dev`），生产 `agent-radar.pages.dev` 空→**404**。修：`_deploy` 显式 **`--branch main`**（=`pages project create --production-branch main`）→ 无论本地 git 在哪分支都落生产稳定别名。补 argv 回归测试。
 - **真机验活**（curl 走代理）：`https://agent-radar.pages.dev/{seg}/` → `noindex` + `<title>` + 目录 + `item-1..10` 锚点 + 四轴 `class=axis`；**站点根 `/`=404**（无 root index、不可枚举，B 档私密成立）。CF token/account + **我生成的 secret** 全落 gitignore 的 `.env`（`run-daily.sh set -a; . .env` 加载；secret 全程不回显/不进 git，只用派生 seg）。**剩**：他手机截图（美学终审）+ 卡片→页 端到端在下次真 daily 自动发生（已 wired+单测）。
+
+---
+
+# Phase C2+D：收紧选品（保 harness 落点）+ 详解锚定 agent/harness（2026-07-03）
+
+**灵魂（不对称）**：只砍"纯模型、对造 agent/harness 无具体可迁移点"的；绝不误杀"模型侧方法、但结论直接砸到 harness 设计"的（原型 = 06-30 [1] 可解释性探针篇：模型方法 + 一等 harness 落点，必须高分存活）。
+
+**A1 收紧 fetch = 做了（真刀，pytest 134 绿）**：`config/sources.yaml` arxiv-agents 去掉 **`cs.LG`**（通用 ML 大类＝可解释性/训练/模型行为主漏口）+ 去掉宽关键词 `LLM/language model/reasoning`，改为 agent 落点词（agent/agentic/multi-agent/tool use/function calling/MCP/retrieval/RAG/agent harness/planning/orchestration）；`radar/sources/arxiv.py` 默认值+docstring 同步；补 `tests/test_arxiv_source.py`（真实 config 不含 cs.LG/宽词、含 agent/agentic）。**量化验证**（06-30 缓存池近似）：50 篇 arXiv 砍 22（几乎全纯模型/跑题：蒸馏/稀疏注意力/3D生成/kernel工程…），[1] 存活（靠 agent/agentic 关键词 + agent-safety 篇几乎必交叉 cs.AI）。**取舍**：drop cs.LG 优于"保留+收窄"——三道闸兜底（关键词 AND 门 + rerank"对他新"）；残余风险=极少 cs.LG-primary 的 agent-RL 篇被漏，兜底=发现漏了再加回。⚠️ [1] 去 cs.LG 仍命中本地无法实证（虚构论文、adapter 不留原始交叉类别），是推断。
+
+**A2 triage 落点判据 = 本轮不做（探针证伪 + 网页 Claude 与我收敛）**：在 06-30 缓存池跑"旧 rubric vs 新 rubric（+落点判据）"双 haiku A/B → 没干净收紧（高分档仅 28→24），且那句"有落点→高分"被 haiku 拿去把中档纯模型 RL 篇误抬。结论：**细粒度"有无 harness 落点"超出 haiku pointwise 能力**；该靠 fetch（A1 确定性）+ rerank（sonnet，已把 [1] 排 #1）分工，**triage 保持粗筛、不加它会误用的细判据**。度量瓶颈是没 ground truth（非统计）。**将来若加走"封顶+豁免"**：封顶 key 在"说不出可落地 harness 启示"（绝不 key 在"模型侧方法"）、豁免说"不封顶"而非"抬高分"（堵误抬）；并造一个人工标注的 20-30 条 keep/cut held-out 集接进 P1 eval 再验。
+
+**B 详解 V3 = 锚定 agent/harness（探针过、待修 2 处再铺）**：在已验证的 V2「点燃入门器」基础上，只把①的类比取材从"通用后端"换成"**agent/harness 概念优先**"（agentic loop/tool system/权限/context engineering/ReAct/brain-hands/MCP 等），并给 4 条锚定示例（probe≈harness hook/middleware/权限门、hold-out≈换没见过的 tool 测泛化、steering≈往 context 注东西但在激活层、SAE≈把激活拆成可命名特征通道）。同一 grounding 重生成 [1]：**锚定成功**（ML 词都落到他的世界、比 V2 后端类比更贴）。**但探针暴露 2 个必修问题（铺前修）**：① **模型在"你能怎么用"轴自行猜出并写进读者的真实雇主/产品名**（脱敏 prompt 未提及、模型幻觉出来的）——详解要上 CF Pages 阅读页 = 指纹泄漏 + 幻觉（换篇可能猜错公司）→ 需硬规则禁止命名读者公司/产品、一律说"你的 agent 系统/harness"；② V3 变长（V2 2206→V3 2815 字）+ ① 把子机制列表化 → 往"论文压缩件"飘、违"宁短勿密" → 需收紧。**这 2 问题已发提示词给网页 Claude 求解，修好再铺全局。**
