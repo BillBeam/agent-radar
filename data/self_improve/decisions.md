@@ -306,4 +306,9 @@
 
 **健壮/幂等**：渲染/写/部署任一步失败 → **不写 `reader_url`** → 卡片每行优雅退回 arxiv 原文（`deliver.py` per-channel try/except 再兜一层）；`npx` 缺失 → 跳过；同一天重跑 seg 稳定、覆盖同页。
 
-**自证（130 测试绿）**：① **真实 2026-06-30 详解离线渲染与 docx 逐项对齐**——日题/分组/条目 =1/3/10、四轴加粗小标题 **58（完全一致）**、标题外链 **10**、critic 引用 1、锚点 `[1..10]` 连续且**目录顺序完全匹配**（`[N]`↔`#item-N` 有保证）、残留 `**`=0、noindex 就位、35538 chars md→48586 chars html；② secret 审计全仓干净。**GATED 待他 CF 账号才能真部署**：手机点开阅读页截图（四轴对标 docx+锚点跳转）+ 端到端卡片 `[N]` 行点开对应那篇 + 部署失败真机退回 arxiv。
+**自证（130 测试绿）**：① **真实 2026-06-30 详解离线渲染与 docx 逐项对齐**——日题/分组/条目 =1/3/10、四轴加粗小标题 **58（完全一致）**、标题外链 **10**、critic 引用 1、锚点 `[1..10]` 连续且**目录顺序完全匹配**（`[N]`↔`#item-N` 有保证）、残留 `**`=0、noindex 就位、35538 chars md→48586 chars html；② secret 审计全仓干净。
+
+**真部署 ops（2026-07-02，131 绿）**：他授权后我建 CF Pages 项目 + 真部署 06-30 页并**真机验活**。两个坑：
+1. **wrangler 首下超时**：`npx -y wrangler` 首次要下载 wrangler（走公司代理很慢）→ 200s 超时。缓存后正常。**wrangler 自己检测并走 `HTTPS_PROXY`**（启动打印 "Proxy environment variables detected"）——代理不是问题，且 web_reader `_deploy` 继承 env 天然带上代理（CF 是西方站、国内必须走代理，这与钉钉渠道 `trust_env=False` 相反、是对的）。
+2. **preview/production 分支坑（关键）**：`wrangler pages deploy` 不带 `--branch` 时**按本地 git 分支推**（仓库在 `master`）→ 落 **Preview**（`master.agent-radar.pages.dev`），生产 `agent-radar.pages.dev` 空→**404**。修：`_deploy` 显式 **`--branch main`**（=`pages project create --production-branch main`）→ 无论本地 git 在哪分支都落生产稳定别名。补 argv 回归测试。
+- **真机验活**（curl 走代理）：`https://agent-radar.pages.dev/{seg}/` → `noindex` + `<title>` + 目录 + `item-1..10` 锚点 + 四轴 `class=axis`；**站点根 `/`=404**（无 root index、不可枚举，B 档私密成立）。CF token/account + **我生成的 secret** 全落 gitignore 的 `.env`（`run-daily.sh set -a; . .env` 加载；secret 全程不回显/不进 git，只用派生 seg）。**剩**：他手机截图（美学终审）+ 卡片→页 端到端在下次真 daily 自动发生（已 wired+单测）。
