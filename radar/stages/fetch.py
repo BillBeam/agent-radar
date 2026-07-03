@@ -6,6 +6,7 @@ recovered / re-run offline.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 from ..core import registry
@@ -15,6 +16,18 @@ from ..core.models import Item, RunContext, TimeWindow
 from ..core.ports import Stage
 from ..core.registry import register
 from ..sources import load_sources
+from ._arxiv import arxiv_id_from_url
+
+_VER = re.compile(r"v\d+$")
+
+
+def _dedup_key(it: Item) -> str:
+    """Dedup key that collapses the SAME arXiv paper across sources AND version suffixes —
+    `arxiv-agents` (`…/abs/2607.02255v1`) vs `hf-daily-papers` (`…/abs/2607.02255` or
+    `huggingface.co/papers/2607.02255`) — which otherwise hash to different per-URL ids and
+    list the paper twice. Non-arXiv items keep their per-URL id (behavior unchanged)."""
+    aid = arxiv_id_from_url(it.url)
+    return f"arxiv:{_VER.sub('', aid)}" if aid else it.id
 
 
 @register("stage", "fetch")
@@ -62,9 +75,10 @@ class FetchStage(Stage):
                         continue
                     undated_kept += 1
                 first_seen.setdefault(it.id, today)  # remember when we first saw it
-                existing = pool.get(it.id)
+                key = _dedup_key(it)                  # arXiv id-normalized (cross-source/version)
+                existing = pool.get(key)
                 if existing is None or it.weight > existing.weight:
-                    pool[it.id] = it
+                    pool[key] = it
                 kept += 1
             per_source[s.id] = kept
 
