@@ -430,3 +430,31 @@ def test_llm_failed_attempts_recorded(monkeypatch):
     assert not res.ok
     assert llm.by_stage["rerank"]["failed"] == 3 and llm.by_stage["rerank"]["calls"] == 0
     assert len(events) == 3 and all(f.get("error") == "timeout" for _, f in events)
+
+
+def test_llm_subprocess_uses_neutral_cwd(monkeypatch):
+    """claude -p loads CLAUDE.md from cwd + every ancestor into model context — pipeline
+    calls must run from a neutral dir so the identity-laden (gitignored) project manual
+    never reaches model context (it bled into outputs bound for the public reading page)."""
+    from pathlib import Path
+
+    import radar.llm.claude_code as CC
+    from radar.core.config import Paths
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+
+        class P:
+            returncode = 0
+            stdout = '{"result": "ok"}'
+            stderr = ""
+        return P()
+
+    monkeypatch.setattr(CC.subprocess, "run", fake_run)
+    llm = CC.ClaudeCodeLLM(config=None, log=None)
+    assert llm.complete("x", tag="t").ok
+    cwd = Path(seen["cwd"]).resolve()
+    assert Paths.root.resolve() not in cwd.parents                    # never under the repo
+    assert not (cwd / "CLAUDE.md").exists()
+    assert not any((p / "CLAUDE.md").exists() for p in cwd.parents)   # no ancestor CLAUDE.md

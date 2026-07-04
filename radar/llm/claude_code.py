@@ -13,7 +13,9 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from ..core.config import RadarConfig
@@ -22,6 +24,17 @@ from ..core.registry import register
 from ._json import extract_json
 
 _OVERLOAD_MARKERS = ("overloaded", "rate", "429", "529", "529 ")
+
+# claude -p auto-loads CLAUDE.md from its cwd AND every ancestor directory into model
+# context — `--system-prompt` does NOT suppress that. Run from inside the repo, and every
+# pipeline call silently carried the gitignored, identity-laden project manual (and any
+# ancestor CLAUDE.md above the repo) straight into triage/rerank/critic/deepread context.
+# That bled into outputs bound for the PUBLIC reading page (the 2026-06-30 ④ employer
+# mention and the V3 probe leak were context bleed, not model prior — the identity guard
+# was the only thing holding). Every call therefore runs from a neutral per-user tmp dir
+# whose ancestry (/var/folders/… or /tmp) carries no CLAUDE.md. Personalization must flow
+# ONLY through the sanctioned channel (USER.md → rerank preamble), never via cwd accident.
+_NEUTRAL_CWD = Path(tempfile.gettempdir()) / "agent-radar-llm-cwd"
 
 
 @register("llm", "claude_code")
@@ -83,9 +96,11 @@ class ClaudeCodeLLM(LLMClient):
             cmd += ["--system-prompt", system]
         env = dict(os.environ)
         env.pop("ANTHROPIC_API_KEY", None)  # force subscription, never API billing
+        _NEUTRAL_CWD.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
             cmd, input=prompt, capture_output=True, text=True,
             timeout=timeout, env=env,
+            cwd=str(_NEUTRAL_CWD),   # no CLAUDE.md in this dir or any ancestor (see above)
         )
         if proc.returncode != 0:
             return False, f"exit {proc.returncode}: {(proc.stderr or '')[:240]}", None

@@ -379,3 +379,26 @@
   （旧硬截断口「…but the gradi」消失，新结尾=博客收尾段）。
 - Anthropic 现抓：11/12 卡解析出真日期（2025-11-24 ~ 2026-04-23），featured 卡无日期落 None（符合预期）。
 - pytest 153 绿（137 → 153，新增 deepread 名额/截断/护栏/降级横幅/日期解析/失败调用观测等 16 项）。
+
+# ★ P0 隐私修复（2026-07-04）：claude -p 上下文渗漏 —— 每次 LLM 调用都带着 CLAUDE.md
+
+## 发现路径
+A 诊断探针的**基线 arm**（无任何个性化注入）的 why 里出现了只存在于本地 CLAUDE.md/SPEC 的信息
+（读者的自进化路线图、他自建的评测系统）→ 起疑 → 直接问 claude -p 它上下文里有什么 → 实锤：
+**从仓库目录跑 `claude -p` 会自动加载 cwd 及所有祖先目录的 CLAUDE.md**（`--system-prompt` 只换系统
+提示词、压不住这个）。生产管线 triage/rerank/critic/deepread/synthesize/eval 的每一次调用都带着
+两份 gitignore 的身份档案（本仓库操作手册 + 祖先目录的另一份含更完整个人背景）。
+
+## 为什么严重
+- deepread 的产出上**公开 Cloudflare 阅读页**——V4 身份护栏一直是唯一防线；2026-06-30 详解④冒出
+  雇主场景、V3 探针泄漏雇主，**根源都是上下文渗漏而非模型先验**（当时误判为「opus 自行带入/幻觉」）。
+- B 的 A/B 设计被污染：personalize_rerank=off 的「基线」其实也认识读者 → toggle 对照失真。
+- 个性化必须只走受控通道（USER.md → rerank preamble），不能走 cwd 意外。
+
+## 修法与验证
+- `claude_code._run` 子进程加 `cwd=<per-user tmp>/agent-radar-llm-cwd`（/var/folders 祖先链上无任何
+  CLAUDE.md）；测试断言 cwd 不在仓库下且全祖先无 CLAUDE.md。
+- 修后真问验证：「无任何项目上下文」✅。残留=Claude Code 账号级注入的用户邮箱（公开化名身份，
+  非档案信息，客户端不可剥）。
+- 影响预期：排序/详解丢掉那份「意外的读者知识」→ 前后排序不可直接对比；这正是把个性化收回
+  受控通道的代价，B 的 A/B 从此才是干净的。
