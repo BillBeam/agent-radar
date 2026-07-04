@@ -336,3 +336,46 @@
 **深读"不够深"根因（查清、未改，先诊断）**：6 篇深读 3 篇建在残缺原文上，两类根因（读缓存 `source_text` 长度实锤）——① **长度上限截断**：[2] arxiv、[8] Anthropic 博客 `source_text` 都=**28000（正好 grounding 上限）**、结尾断句中（[8] "…but the gradi"）→ 正文比 28000 长、被 `deepread.py [:28000]` / `fetch_article_text max_chars=30000` 截了，**非抽取失败**。② **arxiv 正文抽取失败→退摘要**：[3] `source_text` 仅 **5407 字、结尾 "Disable MathJax"（=arxiv abs 摘要页页脚）**→ html/ar5iv/pdf 全链失败退摘要（`2607.*` 太新、html/ar5iv 未出）。**提案（他定）**：长度截→评估调高上限或智能截（留 intro/method/results、砍 references）；抽取失败→太新的论文正文客观不可得，可**检测"仅摘要/薄"→深读名额让位给料足的**（连问题一：[3] 仅摘要却占深读名额、[5][6] 完整却一句话，说不通）。均属 P3「正文抓更全」，先摆根因、未盲改。
 
 **去重 bug（明确 bug、已修+补测，`137 绿`）**：`fetch.py` pool 按 `it.id=sha1(url)` 判重 → [3]`…/abs/2607.02255v1`(arxiv 源) 与 [4]`…/abs/2607.02255`(hf 源) URL 差 `v1` → 判成两条。修：`fetch.py` 加 `_dedup_key()`——arxiv 项用 `arxiv_id_from_url()` + 去 `vN` 后缀作键（`arxiv:2607.02255`）、跨源/跨 v 判重；非 arxiv 保持 per-url id 不变。补 `tests/test_fetch_dedup.py`。（跨**天** `seen` 判重仍按 url-id、未动，属另一机制，留意后续。）只改 fetch 层，未碰 rerank/deepread/`models.py`。
+
+# 7.3 跑后修复包（2026-07-04）—— B名额/C截断/ar5iv护栏/rerank超时/E日期标签
+
+## 根因判定（先查真相，全部有实锤）
+1. **[3] 深读薄的真根因不是「论文太新拿不到全文」**：ar5iv 对未转换论文 301/307 重定向回 arxiv.org/abs
+   摘要页，摘要页抽出 ~4.7K > MIN_FULLTEXT(4000) 闸门 → 假报 src=ar5iv「成功」→ **PDF 兜底从未被尝试**。
+   实测 2607.02255 的 PDF 一直可用（护栏后 src=pdf len=80000）。修：`_arxiv._try_html` 检查最终
+   r.url 落在 /abs/ 即判失败（摘要页永远不是全文）。
+2. **07-03 排序=粗筛分序，个性化 rerank 当晚根本没跑**：radar.log 22:06/22:10/22:14 三连 timeout →
+   「rerank failed — falling back to triage score order」；trace 726.1s = 240s×3 + 2s + 4s 退避，分毫不差。
+   历史成功调用 181s/227s，贴着 240s 默认超时线。→ 当天 [5][6] 沉底不能归罪 USER.md/rerank.md（个性化
+   未生效）。修：rerank 显式 timeout=480；降级置 stats["rerank_degraded"] → digest 头部横幅（rank→梯度分
+   会把回退顺序伪装成自信的个性化排序，必须可见）；claude_code 失败尝试也记 trace/by_stage（本次事故
+   正是被「成功才记录」的观测盲区藏住的：by_stage 里 rerank 整段消失）。
+3. **Anthropic 索引页有日期、适配器没取**：卡片结构 `<h3>标题</h3><div>Apr 23, 2026</div>`，日期就在锚点
+   文本里（strip_trailing_date 一直在从标题剥它=它一直都在）。真实日期显示这些工程文是 2025-11~2026-04
+   的旧文——「往期补课=无日期」的表象下其实是「旧文被当无日期收录」。
+
+## 改法与分寸
+- **B 名额政策（deepread.py）**：先并发探所有 eligible 的 grounding（纯 HTTP；opus 只跑选中的），arXiv 项
+  fetched < THIN_ARXIV_CHARS(8000) 判「薄」（摘要页抽出 4-6K，真全文 ≥12K），薄的让位给下一条完整的；
+  完整不足 top_k 才用薄的补满（诚实降级，V4 prompt 会如实说明截断）。判「薄」用长度阈值而非链路 src
+  标志——src 标志刚被 ar5iv 重定向骗过一次。checkpoint 项复用 full_text 不重抓。非 arXiv（博客）
+  行为不变（页面即文章）。
+- **C 智能截断（deepread.py）**：FETCH_CAP 80000 抓够 → 砍尾部低信息节（References/Bibliography/
+  Acknowledgments/Appendix，只认正文后 60% 里的独立标题行）→ 仍超预算则「头 70% + 尾 30%」夹显式
+  省略标记，段落/句边界吸附，绝不断句中。GROUNDING_CAP 28000 不变（不涨 opus token）。
+- **显示新鲜度统一谓词（models.is_display_fresh）**：🆕 = 有日期且 ≤96h（对齐最宽源 leash：arxiv/hf 96h）。
+  synthesize 与 dingtalk_card 必须共用——过去两边各自写「有日期即新」靠巧合一致，html 日期落地后
+  必然分叉 → 卡片 [N]/投票/mark 会映射错条目。fetch 的 bounded-history 同步泛化为「无日期或过窗口」
+  （feed 源上游已按窗口过滤，零变化；只约束 html 源旧文，维持原每源 8 条上限——洪水控制不变、日期变诚实）。
+- **标签改说法（E2）**：📚「往期补课（无发布日期，首次收录）」→「首次收录（往期/无日期内容，非重复推送）」，
+  头部计数「往期补课 N」→「首次收录 N」——旧措辞读起来像「旧存货重复推」，实义是「第一次进雷达」。
+- **不动**：rerank 排序语义 / USER.md / deepread_top_k / 模型分层 / V4 详解 prompt / 去重（5eccba3）。
+  A（主场 memory/eval 被压）与 D（源结构）只出诊断数据待拍板，探针只读重放、不写管线状态。
+
+## 自证（真数据）
+- 07-03 名额重放（去重后无 [4]、[10] critic skip/high）：深读 = [7][8][9][1][2][5] —— [5]（memory 域、
+  完整 grounding 80000）✅进深读，[3]（薄 4705）✅让位；[6] rank#8 仍一句话（名额=6，符合预期）。
+- 截断真跑：[2] basis 80702→27712（References 零残留、结尾=论文真结论段）；[8] 39780→27419
+  （旧硬截断口「…but the gradi」消失，新结尾=博客收尾段）。
+- Anthropic 现抓：11/12 卡解析出真日期（2025-11-24 ~ 2026-04-23），featured 卡无日期落 None（符合预期）。
+- pytest 153 绿（137 → 153，新增 deepread 名额/截断/护栏/降级横幅/日期解析/失败调用观测等 16 项）。

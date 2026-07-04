@@ -123,10 +123,11 @@ def test_link_extractor_prefers_heading():
     from radar.sources.html import _LinkExtractor
     p = _LinkExtractor()
     p.feed('<a href="/x"><h3>Real Title</h3><p>some blurb that should not mash in</p></a>')
-    assert p.links == [("/x", "Real Title")]
+    # (href, title-ish text, full anchor text — kept for date parsing)
+    assert p.links == [("/x", "Real Title", "Real Title some blurb that should not mash in")]
     p2 = _LinkExtractor()
     p2.feed('<a href="/y">Just Anchor Text</a>')
-    assert p2.links == [("/y", "Just Anchor Text")]
+    assert p2.links == [("/y", "Just Anchor Text", "Just Anchor Text")]
 
 
 def test_clean_title():
@@ -190,7 +191,7 @@ def test_synthesize_recency_split(tmp_path, monkeypatch):
     ctx.items = [dated, undated]
     S.SynthesizeStage().run(ctx)
     md = ctx.digest.markdown
-    assert "🆕 今日新增" in md and "往期补课" in md and "今日新增 1" in md
+    assert "🆕 今日新增" in md and "首次收录" in md and "今日新增 1" in md
 
 
 # ---- E: canonical display order + mark feedback ----
@@ -301,3 +302,131 @@ def test_proxy_settings():
     # env disabled → force direct
     proxies, trust = RadarConfig(use_env_proxy=False).proxy_settings()
     assert proxies is None and trust is False
+
+
+# ---- 7.3 复盘 fixes: display freshness / rerank degrade / html dates / llm failure trace ----
+def test_synthesize_stale_dated_is_backfill(tmp_path, monkeypatch):
+    """A months-old DATED post (html sources now parse card dates) must NOT be presented
+    as 🆕今日新增 — it lands in 📚首次收录 under the honest new label."""
+    import radar.stages.synthesize as S
+    from datetime import datetime, timezone
+    monkeypatch.setattr(S.Paths, "digests", tmp_path)
+    ctx = _ctx()
+    ctx.llm = None
+    ctx.sources = []
+    new = _item(title="new one", score=9)
+    new.published_at = datetime.now(timezone.utc)
+    old = _item(title="old blog post", score=8)
+    old.published_at = datetime.now(timezone.utc) - timedelta(days=60)
+    ctx.items = [old, new]                        # rerank happened to put the old post first
+    S.SynthesizeStage().run(ctx)
+    md = ctx.digest.markdown
+    assert "首次收录（往期/无日期内容，非重复推送）" in md and "往期补课" not in md
+    assert "[1] [new one]" in ctx.digest.markdown_brief     # fresh precedes stale in display
+    assert "[2] [old blog post]" in ctx.digest.markdown_brief
+
+
+def test_card_numbering_agrees_with_synthesize_on_stale_dated(tmp_path, monkeypatch):
+    """The voting card derives [N]/🆕/📚 independently — it must use the SAME freshness
+    predicate as synthesize, or votes/`mark N` map to the wrong item for stale-dated posts."""
+    import radar.stages.synthesize as S
+    from datetime import datetime, timezone
+    from radar.channels.dingtalk_card import item_numbering
+    monkeypatch.setattr(S.Paths, "digests", tmp_path)
+    ctx = _ctx()
+    ctx.llm = None
+    ctx.sources = []
+    old = _item(title="OLD", score=9)
+    old.published_at = datetime.now(timezone.utc) - timedelta(days=60)
+    new = _item(title="NEW", score=8)
+    new.published_at = datetime.now(timezone.utc)
+    ctx.items = [old, new]
+    S.SynthesizeStage().run(ctx)
+    numbering = item_numbering(ctx.digest.items)
+    assert numbering[new.id] == (1, "🆕")
+    assert numbering[old.id] == (2, "📚")
+
+
+def test_synthesize_rerank_degraded_banner(tmp_path, monkeypatch):
+    import radar.stages.synthesize as S
+    from datetime import datetime, timezone
+    monkeypatch.setattr(S.Paths, "digests", tmp_path)
+    ctx = _ctx()
+    ctx.llm = None
+    ctx.sources = []
+    it = _item(title="t", score=9)
+    it.published_at = datetime.now(timezone.utc)
+    ctx.items = [it]
+    ctx.stats["rerank_degraded"] = True
+    S.SynthesizeStage().run(ctx)
+    assert "排序降级" in ctx.digest.markdown and "排序降级" in ctx.digest.markdown_brief
+
+
+def test_rerank_llm_failure_sets_degraded_and_uses_timeout():
+    from types import SimpleNamespace
+    from radar.stages.rerank import RerankStage
+    ctx = _ctx()
+    ctx.items = [_item(score=9, title="a"), _item(score=7, title="b")]
+    seen_kw = {}
+
+    class _FailLLM:
+        def complete_json(self, prompt, **kw):
+            seen_kw.update(kw)
+            return None, SimpleNamespace(ok=False, error="timeout", text="")
+
+    ctx.llm = _FailLLM()
+    RerankStage().run(ctx)
+    assert seen_kw.get("timeout") == 480              # 7.3: the 240s default timed out 3×
+    assert ctx.stats.get("rerank_degraded") is True   # surfaced in the digest header
+    assert [it.title for it in ctx.items] == ["a", "b"]   # triage-score fallback still selects
+
+
+def test_html_source_parses_card_date(monkeypatch):
+    from datetime import datetime, timezone
+    from radar.core.models import Source, SourceType
+    from radar.sources.html import HtmlSource
+    fixture = (
+        '<article><a href="/engineering/featured-post"><h2>Featured Post About Agents</h2>'
+        '<p>blurb text long enough to matter here</p></a></article>'
+        '<article><a href="/engineering/dated-post"><h3>A Dated Engineering Post</h3>'
+        '<div>Apr 23, 2026</div></a></article>'
+    )
+    monkeypatch.setattr(HtmlSource, "get_text", lambda self, url, **kw: fixture)
+    src = Source(id="x", name="X", category="harness", type=SourceType.html,
+                 url="https://ex.com/engineering", params={"url_contains": "/engineering/"})
+    items = HtmlSource().fetch(src, TimeWindow(48))
+    by_slug = {it.url.rsplit("/", 1)[-1]: it for it in items}
+    dated = by_slug["dated-post"]
+    assert dated.published_at == datetime(2026, 4, 23, tzinfo=timezone.utc)
+    assert dated.title == "A Dated Engineering Post"        # the date never leaks into the title
+    assert by_slug["featured-post"].published_at is None    # dateless card → undated as before
+
+
+def test_fetch_backfill_cap_covers_stale_dated():
+    from datetime import datetime, timezone
+    from radar.stages.fetch import _needs_backfill_cap
+    w = TimeWindow(48)
+    undated = _item(title="u")
+    stale = _item(title="s")
+    stale.published_at = datetime.now(timezone.utc) - timedelta(days=30)
+    fresh = _item(title="f")
+    fresh.published_at = datetime.now(timezone.utc)
+    assert _needs_backfill_cap(undated, w) and _needs_backfill_cap(stale, w)
+    assert not _needs_backfill_cap(fresh, w)
+
+
+def test_llm_failed_attempts_recorded(monkeypatch):
+    import radar.llm.claude_code as CC
+    events = []
+
+    class _Tr:
+        def event(self, kind, **f):
+            events.append((kind, f))
+
+    llm = CC.ClaudeCodeLLM(config=None, log=None, trace=_Tr())
+    monkeypatch.setattr(llm, "_run", lambda *a, **k: (False, "timeout", None))
+    monkeypatch.setattr(CC.time, "sleep", lambda s: None)
+    res = llm.complete("x", tag="rerank", retries=3)
+    assert not res.ok
+    assert llm.by_stage["rerank"]["failed"] == 3 and llm.by_stage["rerank"]["calls"] == 0
+    assert len(events) == 3 and all(f.get("error") == "timeout" for _, f in events)

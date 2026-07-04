@@ -90,11 +90,18 @@ class RerankStage(Stage):
         user = (preamble
                 + "Rank these candidates best-first per the rubric. Return ONLY the JSON array.\n\n"
                 + "\n".join(lines))
-        data, res = ctx.llm.complete_json(user, system=system, model=ctx.config.models.synthesize, tag=self.name)
+        # listwise ranking of ≤24 finalists legitimately runs 3-4 min (succeeded at 181s and
+        # 227s); the 240s default timed out 3× on 2026-07-03 and silently degraded the whole
+        # day's ordering to triage-score order — give it real headroom.
+        data, res = ctx.llm.complete_json(user, system=system, model=ctx.config.models.synthesize,
+                                          timeout=480, tag=self.name)
         if not isinstance(data, list) or not data:
             data = salvage_objects(res.text) if res.text else []
         if not isinstance(data, list) or not data:
             ctx.log.warn("rerank failed — falling back to triage score order", error=res.error)
+            # surfaced in the digest header — a degraded ordering must never look like a
+            # confident personalized ranking (the rank→gradient scores would fake it)
+            ctx.stats["rerank_degraded"] = True
             return sorted(items, key=lambda it: (it.score or 0), reverse=True)
 
         order: list[Item] = []

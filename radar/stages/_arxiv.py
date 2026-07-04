@@ -58,6 +58,12 @@ def _try_html(session: requests.Session, url: str, timeout: float, proxies) -> s
     try:
         r = session.get(url, timeout=timeout, proxies=proxies, headers=_UA)
         r.raise_for_status()
+        # ar5iv (and arxiv.org/html for unconverted papers) 30x-redirects to the
+        # arxiv.org/abs/ ABSTRACT page; its extract (~4-6K) passes MIN_FULLTEXT and would
+        # masquerade as full text — silently skipping the pdf fallback (7.3 [3] 根因:
+        # ar5iv/2607.02255 → 301/307 → abs, 4705 chars reported as src=ar5iv).
+        if "/abs/" in (r.url or ""):
+            return ""
         if "html" not in r.headers.get("content-type", "").lower():
             return ""
         return _extract_html(r.text)

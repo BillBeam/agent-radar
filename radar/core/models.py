@@ -135,6 +135,20 @@ class TimeWindow:
         return when >= self.cutoff
 
 
+# ---- display freshness: 🆕今日新增 vs 📚首次收录 ----
+# Widest per-source recency leash (arxiv/hf run 96h): a DATED item older than this is
+# back-catalog we're collecting for the first time, not "today's news". Before html sources
+# carried dates, "dated ⇒ fresh" was safe; now an index page can yield months-old dated posts.
+FRESH_MAX_AGE_H = 96.0
+
+
+def is_display_fresh(item: "Item") -> bool:
+    """THE single definition of the 🆕/📚 split. synthesize (grouping + [N] numbering +
+    items.json order) and dingtalk_card (row numbering/markers) must both use this —
+    if they ever disagree, card votes / `radar mark N` map to the wrong item."""
+    return item.published_at is not None and TimeWindow(FRESH_MAX_AGE_H).is_fresh(item.published_at)
+
+
 @dataclass
 class RunContext:
     """Mutable per-run state threaded through the pipeline.

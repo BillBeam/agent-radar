@@ -30,6 +30,15 @@ def _dedup_key(it: Item) -> str:
     return f"arxiv:{_VER.sub('', aid)}" if aid else it.id
 
 
+def _needs_backfill_cap(it: Item, window: TimeWindow) -> bool:
+    """True for back-catalog items: DATELESS or STALE-DATED (outside the source's recency
+    window). Both are 'first seen now, not published now' — bounded per source per run so
+    an index page can't dump its whole archive into one day's candidates. Stale-dated items
+    only arrive from index-scrape sources (html) — feed adapters window-filter upstream, so
+    this preserves the exact pre-date-parsing flood control for them."""
+    return it.published_at is None or not window.is_fresh(it.published_at)
+
+
 @register("stage", "fetch")
 class FetchStage(Stage):
     name = "fetch"
@@ -63,17 +72,17 @@ class FetchStage(Stage):
                 continue
 
             kept = 0
-            undated_kept = 0
+            backfill_kept = 0
             for it in items:
                 if it.id in seen:
                     ctx.bump("skipped_seen")
                     continue
-                if it.published_at is None:
-                    # bounded history: a dateless source (e.g. a blog index page) must
-                    # not dump its whole back-catalog as "today".
-                    if undated_kept >= max_undated:
+                if _needs_backfill_cap(it, eff):
+                    # bounded history: back-catalog (dateless OR stale-dated index posts)
+                    # must not dump its whole archive as "today".
+                    if backfill_kept >= max_undated:
                         continue
-                    undated_kept += 1
+                    backfill_kept += 1
                 first_seen.setdefault(it.id, today)  # remember when we first saw it
                 key = _dedup_key(it)                  # arXiv id-normalized (cross-source/version)
                 existing = pool.get(key)

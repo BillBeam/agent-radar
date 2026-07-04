@@ -5,12 +5,19 @@ params:
   url_contains: "/engineering"   # keep only links whose href contains this
   limit: 25
   min_text_len: 18               # skip nav/short anchors
-Items have no published_at (None) → they pass the freshness window and rely on
-dedup (seen.json) + triage to avoid stale repeats.
+Dates: index cards often print the publish date inside the link (Anthropic renders
+'<h3>Title</h3><div>Apr 23, 2026</div>') — we parse it so genuinely-new posts enter as
+🆕今日新增 with a real date and old posts are honestly 📚首次收录 (7.3 复盘: everything
+was undated → labeled 无日期 backfill). Cards without a date keep published_at=None →
+bounded back-catalog handling as before. No window filter here either way: the whole
+point of this source is collecting the not-yet-seen back-catalog (fetch bounds it).
 """
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
 from html.parser import HTMLParser
+from typing import Optional
 from urllib.parse import urljoin
 
 from ..core.models import Item, Source, TimeWindow
@@ -19,6 +26,25 @@ from ..core.text import smart_truncate, strip_trailing_date
 from ._base import BaseSource
 
 _TITLE_PREFIXES = ("Featured ", "New ", "Announcement ", "Read more ")
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+_DATE_RE = re.compile(
+    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),\s*(20\d{2})\b")
+
+
+def _published(anchor_text: str) -> Optional[datetime]:
+    """Publish date from a card's full anchor text. The date sits AFTER the title/blurb,
+    so take the LAST match; None (→ undated handling) when the card shows no date."""
+    m = None
+    for m in _DATE_RE.finditer(anchor_text):
+        pass
+    if m is None:
+        return None
+    try:
+        return datetime(int(m.group(3)), _MONTHS[m.group(1).lower()[:3]], int(m.group(2)),
+                        tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def _clean_title(text: str, max_len: int = 80) -> str:
@@ -71,7 +97,9 @@ class _LinkExtractor(HTMLParser):
         if tag == "a" and self._href is not None:
             heading = " ".join(" ".join(self._heading).split())
             anchor = " ".join(" ".join(self._text).split())
-            self.links.append((self._href, heading or anchor))
+            # (href, title-ish text, FULL anchor text) — the full text keeps the card's
+            # date (rendered outside the heading) available for _published()
+            self.links.append((self._href, heading or anchor, anchor))
             self._href = None
             self._text = []
             self._heading = []
@@ -91,14 +119,15 @@ class HtmlSource(BaseSource):
 
         seen: set[str] = set()
         items: list[Item] = []
-        for href, text in parser.links:
+        for href, text, anchor in parser.links:
             url = urljoin(source.url, href)
             if contains and contains not in url:
                 continue
             if len(text) < min_len or url in seen:
                 continue
             seen.add(url)
-            items.append(Item.create(source=source, title=_clean_title(text), url=url))
+            items.append(Item.create(source=source, title=_clean_title(text), url=url,
+                                     published_at=_published(anchor)))
             if len(items) >= limit:
                 break
         return items

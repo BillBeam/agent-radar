@@ -12,7 +12,7 @@ import re
 
 from ..core.config import Paths
 from ..core.io import atomic_write_json
-from ..core.models import Digest, Item, RunContext
+from ..core.models import Digest, Item, RunContext, is_display_fresh
 from ..core.ports import Stage
 from ..core.registry import register
 from ..core.text import demote_headings, smart_truncate, strip_trailing_date
@@ -137,20 +137,23 @@ class SynthesizeStage(Stage):
             return
 
         title_kind = "每周深读" if ctx.mode == "weekly" else "今日"
-        # items arrive in rerank rank-order; split by recency (dated = today's new,
-        # undated = back-catalog catch-up) so we never pass off old posts as "today".
-        fresh = [it for it in items if it.published_at is not None]
-        backfill = [it for it in items if it.published_at is None]
+        # items arrive in rerank rank-order; split by DISPLAY freshness (recent-dated =
+        # today's new; undated OR stale-dated = back-catalog first collected now) so we
+        # never pass off old posts as "today" — shared predicate with dingtalk_card.
+        fresh = [it for it in items if is_display_fresh(it)]
+        backfill = [it for it in items if not is_display_fresh(it)]
         # CANONICAL display order = fresh→backfill (each in rank order). This single
         # order drives the [N] numbers, items.json persistence AND `radar mark` — so the
         # number you see in DingTalk always maps to the right item.id (no silent mismatch).
         ordered = fresh + backfill
         number_of = {id(it): n for n, it in enumerate(ordered, 1)}
-        counts = f"今日新增 {len(fresh)}" + (f" · 往期补课 {len(backfill)}" if backfill else "")
+        counts = f"今日新增 {len(fresh)}" + (f" · 首次收录 {len(backfill)}" if backfill else "")
+        degraded = ("> ⚠️ 本日排序降级：rerank 未成功（LLM 超时/失败），条目顺序为粗筛分数序、个性化未生效。\n"
+                    if ctx.stats.get("rerank_degraded") else "")
         header = (f"# Agent Radar · {date}（{weekday}）\n\n"
                   f"> 扫描 {len(ctx.sources)} 源 · 候选 {funnel.get('candidates', 0)} · "
                   f"{counts} · 跳过已读 {ctx.stats.get('skipped_seen', 0)}\n"
-                  + _health_line(ctx))
+                  + _health_line(ctx) + degraded)
 
         tldr = _tldr(ctx, ordered)
         tldr_block = f"\n## 🎯 {title_kind} TL;DR\n\n{tldr}\n" if tldr else ""
@@ -172,7 +175,10 @@ class SynthesizeStage(Stage):
 
         if backfill:  # only label when there's a contrast to draw
             _emit(fresh, "🆕 今日新增")
-            _emit(backfill, "📚 往期补课（无发布日期，首次收录）")
+            # NOT a re-push: these are pieces first collected today whose publish date is
+            # old or missing (e.g. blog index back-catalog) — the old wording 往期补课
+            # read like stale re-runs and confused the reader.
+            _emit(backfill, "📚 首次收录（往期/无日期内容，非重复推送）")
         else:
             _emit(fresh, None)
 

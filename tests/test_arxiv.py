@@ -93,3 +93,23 @@ def test_fetch_article_falls_through_to_abstract(monkeypatch):
     monkeypatch.setattr(ART.requests, "Session", _Session)
     out = ART.fetch_article_text("https://arxiv.org/abs/2606.26027", config=None)
     assert "just the abstract" in out                                   # graceful degrade
+
+
+# ---- ar5iv redirect-to-abstract guard (2026-07-03 [3] root cause) ----
+def test_try_html_rejects_abs_redirect():
+    """ar5iv 30x-redirects unconverted papers to arxiv.org/abs/ — the abstract page extracts
+    to ~4-6K which passes MIN_FULLTEXT and masqueraded as full text, silently skipping the
+    pdf fallback. The final URL landing on /abs/ must be treated as a miss."""
+    class _Resp:
+        url = "https://arxiv.org/abs/2607.02255"
+        text = "<html><p>" + "abstract text " * 600 + "</p></html>"   # big enough to fool the gate
+        headers = {"content-type": "text/html"}
+
+        def raise_for_status(self):
+            pass
+
+    class _Session:
+        def get(self, *a, **k):
+            return _Resp()
+
+    assert A._try_html(_Session(), "https://ar5iv.org/html/2607.02255", 5.0, None) == ""

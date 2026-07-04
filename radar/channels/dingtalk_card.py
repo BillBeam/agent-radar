@@ -21,7 +21,7 @@ from typing import Any
 
 import requests
 
-from ..core.models import Digest, Item, RunContext
+from ..core.models import Digest, Item, RunContext, is_display_fresh
 from ..core.ports import Channel
 from ..core.registry import register
 
@@ -39,16 +39,18 @@ def _clip(s: str | None, n: int) -> str:
 
 def _canonical_order(items: list[Item]) -> list[Item]:
     """Mirror synthesize.py's display order (fresh→backfill) WITHOUT importing/altering synthesize,
-    so a row's [N] equals the brief's. Within each group input order is preserved."""
-    fresh = [it for it in items if it.published_at is not None]
-    backfill = [it for it in items if it.published_at is None]
+    so a row's [N] equals the brief's. Within each group input order is preserved.
+    Freshness comes from the SHARED predicate (models.is_display_fresh) — the two sides
+    disagreeing would misalign card votes / `radar mark N`."""
+    fresh = [it for it in items if is_display_fresh(it)]
+    backfill = [it for it in items if not is_display_fresh(it)]
     return fresh + backfill
 
 
 def item_numbering(items: list[Item]) -> dict:
     """{item.id: (N, marker)} — N is the 1-based position in canonical order, marker 🆕/📚. Built
     over the FULL list so rows line up 1:1 with the brief even though deep-read items are a subset."""
-    return {it.id: (n, "🆕" if it.published_at is not None else "📚")
+    return {it.id: (n, "🆕" if is_display_fresh(it) else "📚")
             for n, it in enumerate(_canonical_order(items), 1)}
 
 

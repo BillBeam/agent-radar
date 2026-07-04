@@ -18,7 +18,7 @@ def _item(**kw):
 def test_build_items():
     from datetime import datetime, timezone
     from radar.channels.dingtalk_card import build_items
-    dt = datetime(2026, 6, 26, tzinfo=timezone.utc)
+    dt = datetime.now(timezone.utc)          # display-fresh (dated-old would be 📚 by design)
     a = _item(id="a", published_at=dt, url="http://a", reason="一句话理由", explain_zh="详解")  # 🆕
     b = _item(id="b", published_at=dt, url="http://b", reason="r-b", explain_zh=None)  # 🆕 not deep-read — STILL a row
     c = _item(id="c", published_at=None, url="http://c", reason="r2", explain_zh="详解")  # 📚
@@ -73,7 +73,7 @@ def test_item_numbering_matches_brief():
     non-contiguous subset."""
     from datetime import datetime, timezone
     from radar.channels.dingtalk_card import _canonical_order, deep_read_items, item_numbering
-    dt = datetime(2026, 6, 26, tzinfo=timezone.utc)
+    dt = datetime.now(timezone.utc)          # display-fresh (dated-old would be 📚 by design)
     a = _item(id="a", published_at=dt, explain_zh="详解")        # fresh, deep-read
     b = _item(id="b", published_at=dt, explain_zh=None)          # fresh, NOT deep-read
     c = _item(id="c", published_at=None, explain_zh="详解")      # backfill, deep-read

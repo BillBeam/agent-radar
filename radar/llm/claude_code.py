@@ -39,21 +39,29 @@ class ClaudeCodeLLM(LLMClient):
         self.by_stage: dict[str, dict] = {}
 
     def _record_call(self, model: str, tag: Optional[str], ms: float,
-                     usage: Optional[dict]) -> None:
+                     usage: Optional[dict], error: Optional[str] = None) -> None:
         """Per-call observability: roll up (tag → tokens/latency) for last_run.json + emit a
-        per-call trace event. Best-effort — must never break a call. No $ (subscription)."""
+        per-call trace event. Failed ATTEMPTS are recorded too (`failed` counter + an
+        `error` field on the event) — 7.3's rerank burned 726s on 3 timeouts and was
+        invisible in both trace and by_stage. Best-effort — must never break a call."""
         u = usage or {}
         ino, out = u.get("input_tokens", 0) or 0, u.get("output_tokens", 0) or 0
         s = self.by_stage.setdefault(tag or "?", {"calls": 0, "input": 0, "output": 0,
                                                   "ms": 0.0, "model": model})
-        s["calls"] += 1
-        s["input"] += ino
-        s["output"] += out
+        if error is None:
+            s["calls"] += 1
+            s["input"] += ino
+            s["output"] += out
+        else:
+            s["failed"] = s.get("failed", 0) + 1
         s["ms"] = round(s["ms"] + ms, 1)
         if self.trace is not None:
             try:
-                self.trace.event("llm_call", tag=tag, model=model, ms=ms, input=ino,
-                                 output=out, cache_read=u.get("cache_read_input_tokens", 0) or 0)
+                fields = dict(tag=tag, model=model, ms=ms, input=ino, output=out,
+                              cache_read=u.get("cache_read_input_tokens", 0) or 0)
+                if error is not None:
+                    fields["error"] = error
+                self.trace.event("llm_call", **fields)
             except Exception:  # noqa: BLE001 — tracing must never break a call
                 pass
 
@@ -123,6 +131,7 @@ class ClaudeCodeLLM(LLMClient):
                 self._record_call(model, tag, ms, usage)
                 return LLMResult(text=text, raw=data, usage=usage, model=model, ok=True)
 
+            self._record_call(model, tag, ms, None, error=(text or "?")[:100])
             last_err = text
             transient = any(m in text.lower() for m in _OVERLOAD_MARKERS) or text == "timeout"
             if self.log:
