@@ -458,3 +458,30 @@ def test_llm_subprocess_uses_neutral_cwd(monkeypatch):
     assert Paths.root.resolve() not in cwd.parents                    # never under the repo
     assert not (cwd / "CLAUDE.md").exists()
     assert not any((p / "CLAUDE.md").exists() for p in cwd.parents)   # no ancestor CLAUDE.md
+
+
+def test_llm_subprocess_disables_all_tools(monkeypatch):
+    """Pipeline calls are text-in-text-out. With tools available the model sporadically
+    OPENS with a tool call (live 2026-07-04: rerank answered with ReportFindings), which
+    burns the single --max-turns turn → CLI exit 1, empty stderr → silent stage degrade.
+    `--tools \"\"` removes the whole failure class (and the tool-driven contamination
+    channel: a pipeline call must never Read files or browse)."""
+    import radar.llm.claude_code as CC
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+
+        class P:
+            returncode = 0
+            stdout = '{"result": "ok"}'
+            stderr = ""
+        return P()
+
+    monkeypatch.setattr(CC.subprocess, "run", fake_run)
+    llm = CC.ClaudeCodeLLM(config=None, log=None)
+    assert llm.complete("x", tag="t").ok
+    cmd = seen["cmd"]
+    i = cmd.index("--tools")
+    assert cmd[i + 1] == ""                       # all tools disabled, text-only completion
+    assert "--max-turns" in cmd and cmd[cmd.index("--max-turns") + 1] == "1"

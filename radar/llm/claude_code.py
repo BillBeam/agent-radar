@@ -5,7 +5,9 @@ Because ANTHROPIC_API_KEY is unset and Claude Code is logged in via the
 subscription, these calls draw on the subscription, not metered API billing. We
 strip ANTHROPIC_API_KEY from the child env so it can never silently flip to API
 billing. `--system-prompt` replaces Claude Code's heavy default prompt (cheaper,
-focused); `--max-turns 1` forces a single deterministic completion (no tool loop).
+focused); `--tools ""` removes every tool so the model can only answer with text
+(a stray opening tool call would burn the whole call, see _run); `--max-turns 1`
+then forces a single deterministic completion.
 """
 from __future__ import annotations
 
@@ -90,7 +92,14 @@ class ClaudeCodeLLM(LLMClient):
 
     def _run(self, prompt: str, system: Optional[str], model: str,
              timeout: float) -> tuple[bool, str, dict | None]:
-        cmd = [self.bin, "-p", "--output-format", "json",
+        # --tools "": pipeline calls are strictly text-in-text-out. With the default tool
+        # set available, the model sporadically opens with a tool call (seen live
+        # 2026-07-04: sonnet answered a rerank prompt with ReportFindings) — that burns
+        # the single allowed turn, the CLI exits 1 with EMPTY stderr (max_turns_reached),
+        # and the wrapper reads it as a non-transient failure → silent stage degrade.
+        # No tools also closes the residual contamination channel (a pipeline call must
+        # never Read files / browse; personalization flows only via USER.md → preamble).
+        cmd = [self.bin, "-p", "--output-format", "json", "--tools", "",
                "--model", model, "--max-turns", "1"]
         if system:
             cmd += ["--system-prompt", system]
