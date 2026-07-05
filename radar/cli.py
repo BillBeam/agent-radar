@@ -1,6 +1,6 @@
 """agent-radar CLI — the single entry point.
 
-    python -m radar --mode daily|weekly|validate|doctor|status|query|eval|evolve
+    python -m radar --mode daily|weekly|validate|doctor|status|query|eval|review|evolve|serve
 
 launchd, the optional /agent-radar skill, and manual runs all call this.
 """
@@ -13,7 +13,7 @@ import sys
 from importlib import import_module
 from pathlib import Path
 
-MODES = ["daily", "weekly", "validate", "doctor", "status", "query", "eval", "evolve", "serve"]
+MODES = ["daily", "weekly", "validate", "doctor", "status", "query", "eval", "review", "evolve", "serve"]
 
 
 def cmd_doctor() -> int:
@@ -217,6 +217,34 @@ def cmd_eval(date: str | None) -> int:
     return 0 if result else 1
 
 
+def cmd_review(dry_run: bool) -> int:
+    """`radar --mode review` — E1 weekly reviewer: aggregate the system's own products
+    (eval trend / votes / source mix / self_applicable / critic / WATCHLIST) into
+    data/self_improve/reviews/{date}-review.md with an LLM DRAFT (observations +
+    suggestions — NEVER auto-applied) and push a top-line summary to the DingTalk 1v1.
+    --dry-run = data sections only (no LLM, no push). Weekly via launchd; manual any time."""
+    from .core import registry
+    from .core.config import Paths, load_config
+    from .core.runner import build_llm
+    from .obs import Logger
+    from .self_improve.review import run_review
+
+    config = load_config()
+    llm = None
+    log = None
+    if not dry_run:
+        registry.load_adapters()           # register the claude_code LLM adapter
+        log = Logger("review", log_path=Paths.state / "radar.log", echo=False)
+        llm = build_llm(config, log)
+        if llm is None:
+            print("no LLM backend (claude CLI) — 数据段照出，草案段标注不可用。")
+    try:
+        return run_review(llm=llm, config=config, dry_run=dry_run)
+    finally:
+        if log is not None:
+            log.close()
+
+
 def cmd_serve() -> int:
     """`radar --mode serve` — long-running DingTalk Stream listener: catch 👍/👎 card taps →
     write feedback (same store as `radar mark`) → flip the card to 已记录. Needs DingTalk env creds.
@@ -260,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_validate()
     if args.mode == "eval":
         return cmd_eval(args.date)
+    if args.mode == "review":
+        return cmd_review(args.dry_run)
     if args.mode == "serve":
         return cmd_serve()
     if args.mode in ("daily", "weekly"):

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TEMPLATE — `scripts/install-launchd.sh` replaces __REPO__ with this repo's absolute path
+     and installs the result to ~/Library/LaunchAgents (never committed). Weekly reviewer:
+     Sunday 21:00 — observations + DRAFT suggestions only (HITL; it never applies anything). -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agentradar.review</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/scripts/run-review.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key><integer>0</integer>
+    <key>Hour</key><integer>21</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__REPO__/data/state/launchd-review.log</string>
+  <key>StandardErrorPath</key><string>__REPO__/data/state/launchd-review.log</string>
+</dict>
+</plist>

@@ -22,6 +22,9 @@ data/critic/*
 data/web/*
 data/self_improve/proposals/*
 data/self_improve/eval_runs/*
+# leak-scan vocabulary IS identity data → local only; local/ = scan-failed fallback bucket
+data/self_improve/leak_terms.local.txt
+data/self_improve/local/
 # real-profile A/B / eval runs — derived from the private USER.md, so they leak a
 # professional fingerprint even without direct PII → LOCAL ONLY, never committed.
 # data/real-llm-runs/ itself stays tracked for DESENSITIZED (placeholder-profile) proof.

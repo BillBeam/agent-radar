@@ -2,14 +2,15 @@
 # Generate the real launchd plists from deploy/*.plist (filling this repo's absolute path)
 # and load them — the unattended daily + the voting-listener常驻 in one command.
 #
-#   bash scripts/install-launchd.sh [daily|serve|both]   # default: both
-#   bash scripts/install-launchd.sh uninstall            # unload + remove
+#   bash scripts/install-launchd.sh [daily|serve|review|all|both]   # default: all
+#   bash scripts/install-launchd.sh uninstall                       # unload + remove
+#   (both = daily+serve, kept for muscle memory; all = daily+serve+review)
 #
 # The generated plists live in ~/Library/LaunchAgents (outside the repo → never committed).
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LA="$HOME/Library/LaunchAgents"; mkdir -p "$LA"
-WHAT="${1:-both}"
+WHAT="${1:-all}"
 
 _one() {
   local name="$1" dst="$LA/com.agentradar.$1.plist"
@@ -25,10 +26,12 @@ _rm() {
 }
 
 case "$WHAT" in
-  uninstall) _rm daily; _rm serve ;;
+  uninstall) _rm daily; _rm serve; _rm review ;;
   daily)     _one daily ;;
   serve)     _one serve ;;
+  review)    _one review ;;
   both)      _one daily; _one serve ;;
-  *) echo "usage: $0 [daily|serve|both|uninstall]"; exit 1 ;;
+  all)       _one daily; _one serve; _one review ;;
+  *) echo "usage: $0 [daily|serve|review|all|both|uninstall]"; exit 1 ;;
 esac
 echo "done. verify: launchctl list | grep agentradar    (logs: data/state/launchd-*.log)"
