@@ -18,7 +18,8 @@ Agent Radar 把这件事自动化并做到极致：
 3. **质量门**：硬阈值 + 噪声拒绝 + 封顶，**宁缺毋滥**
 4. **深读详解**：对 top 条目拉全文，用 Claude Opus 产出**结构化中文详解**（背景/机制/术语/价值/局限），严格落原文、反幻觉
 5. **双语 digest**：钉钉发**精简版**（扫一眼就懂），本地存**完整逐篇详解**（精读 / 深聊）
-6. **记忆 + 对话 + 自我进化**（开发中）：记得过往推送和你这个人；能跟你讨论今天的内容；并把读到的前沿技术 **eval 验证后用来升级自己**
+6. **记忆 + 个性化**（已落地）：SQLite FTS5 记忆 + 手填「已会清单」接进重排——推「对你重要**且对你新**」的
+7. **尺子 + 周度自省**（已落地）：每天 daily 跑完自动 eval 当天详解忠实度/排序；每周日 reviewer 自动盘点 eval 趋势/投票/源分布出**草案建议**推钉钉——**改不改由你拍板，零自动应用**（对话深挖 / 代码级自进化仍在规划）
 
 ---
 
@@ -31,7 +32,7 @@ Agent Radar 把这件事自动化并做到极致：
 | 🧩 **可拓展架构** | ports-and-adapters 六边形：加一个源/渠道/规则 = 加一个文件或一行配置，不动核心 |
 | 💰 **零额外计费** | LLM 走 `claude -p` headless + 你的订阅；记忆走本地 SQLite FTS5（无嵌入/向量库）；不调付费 API |
 | 🛡️ **生产级健壮** | 每源熔断、每段降级、原子写、结构化日志 + 全链路 trace、单测 + eval 回归 |
-| 🔁 **自我进化**（规划中） | 对话中改自己的配置/prompt、自创建 skill；把前沿技术 eval-gated 应用到自身 |
+| 🔁 **自我进化**（E1 已上线） | 每周日自动盘点 eval/投票/源分布 → 草案建议推钉钉，**零自动应用、用户拍板**；对话式改配置与代码级闭环（E2）规划中 |
 
 ---
 
@@ -40,16 +41,21 @@ Agent Radar 把这件事自动化并做到极致：
 **一句话**：Python 是确定性 harness（可靠、可扩展），Claude（订阅）是被注入的理解/判断器，记忆与配置由文件持有、被两面共享。
 
 ```
-launchd（定时） ─> python -m radar --mode daily
+launchd（每天 08:30） ─> python -m radar --mode daily
    │
    ├─ [1] Fetch        源适配器并行抓取（无 LLM，永远先出候选池）→ data/candidates/{date}.json
    ├─ [2] Triage       claude -p 按主题 rubric 打分/打标签/判自相关（便宜模型）
    ├─ [3] Quality Gate 噪声拒绝 + 相关性硬阈值 + 封顶（可组合规则，宁缺毋滥）
-   ├─ [4] Recall       从记忆检索相关过往推送 + 用户画像        （P2，下一步）
-   ├─ [5] Deep-read    拉全文 → Opus 产出中文详解（落原文，反幻觉，并发）
-   ├─ [6] Synthesize   双语 digest（精简版 + 完整版）
-   ├─ [7] Deliver      钉钉（加签，精简版）+ 本地归档（完整版）+ Mac 通知
-   └─ [8] Remember     写内容记忆 + 更新用户画像              （P2，下一步）
+   ├─ [4] Rerank       listwise 相对排序 + USER.md 已会清单降权（「对你重要且对你新」）
+   ├─ [5] Critic       「有真料吗」批判层——诚实标 ⚠️可跳过，垃圾让出深读名额
+   ├─ [6] Deep-read    拉全文（arXiv 全文 + 智能截断）→ 中文四轴详解（落原文，反幻觉）
+   ├─ [7] Synthesize   双渲染（钉钉精简版 + 完整版）
+   ├─ [8] Deliver      CF Pages 阅读页 + 钉钉互动卡（👍/👎）+ 本地归档 + Mac 通知
+   └─ [9] Remember     写内容记忆（FTS5）
+   └─ 跑完自动 → radar --mode eval 今天（忠实度/排序尺子；失败只记日志不碰投递）
+
+launchd（每周日 21:00） ─> python -m radar --mode review    E1 周度盘点 → 草案推钉钉（零自动应用）
+launchd（常驻 KeepAlive） ─> python -m radar --mode serve    钉钉 Stream 监听 👍/👎 → feedback
 ```
 
 **两种运行模式，共享同一套代码与数据**（详见 [docs/SPEC.md](docs/SPEC.md)）：
@@ -78,24 +84,33 @@ python -m radar --mode doctor
 # 4. 验活所有信息源（逐个拉一遍，报告死链）
 python -m radar --mode validate
 
-# 5. 跑一次每日管线（抓取 → 分诊 → 质量门 → 详解 → 投递）
+# 5. 手动跑一次每日管线（抓取 → 分诊 → 质量门 → 重排 → 批判层 → 详解 → 投递）
+#    生产模式是 launchd 每天 08:30 自动跑（见下节），手动跑只用于调试/补跑
 python -m radar --mode daily
 
 # 跑测试
 pytest
 ```
 
-### 无人值守每天跑（launchd）
+### 无人值守（launchd 三件套）
 
-让它每天自动跑 + 投票实时接住，两个 launchd agent 一键装好（`com.agentradar.daily` 定时 + `com.agentradar.serve` 常驻）：
+三个 launchd agent 一键装好：`com.agentradar.daily`（每天 08:30，跑完自动 eval 当天）+ `com.agentradar.serve`（常驻接投票，KeepAlive）+ `com.agentradar.review`（每周日 21:00 盘点，草案摘要推钉钉）：
 
 ```bash
-# .env 里加一行代理（无人值守 daily 抓西方源用）：HTTPS_PROXY=http://<代理>:<端口>
-bash scripts/install-launchd.sh both        # 生成并加载（plist 自动填本仓库绝对路径）
+# .env 里加一行代理（无人值守 daily 抓西方源 + claude CLI 用）：HTTPS_PROXY=http://<代理>:<端口>
+bash scripts/install-launchd.sh all         # 生成并加载（plist 自动填本仓库绝对路径）
 launchctl list | grep agentradar            # 确认在跑；日志见 data/state/launchd-*.log
 ```
 
+> ⚠️ **TCC 前提**：仓库**不能**放在 `~/Desktop`、`~/Documents`、`~/Downloads` 等 macOS 隐私保护目录——launchd 干净上下文里的 `/bin/bash` 读不了这些路径，agent 会 `Operation not permitted` + 126 循环（本仓库因此迁到 `~/agent-radar`）。放家目录普通路径即可，无需给 bash 完全磁盘访问。
+
 完整说明（代理处理、改时间、cron 替代、卸载）见 **[deploy/README.md](deploy/README.md)**。
+
+### 尺子与周度自省（自动运转，用户只拍板）
+
+- **每天**：daily 结束后自动 `radar --mode eval <今天>`——裁判 LLM 把每篇详解拆成事实主张、逐条回深读时的原文找证据（忠实度），加上排序合理性，报告落 `data/eval/{date}.json+.md`；撞额度靠逐篇存盘、次日自动续。
+- **每周日**：`radar --mode review` 聚合 eval 趋势 / 👍👎 投票 / top-10 源分布 / 「能改进自己」标注 / critic 统计 / WATCHLIST → 周报存 `data/self_improve/reviews/`，top-line 摘要自动推钉钉 1v1。
+- **红线**：review 只产出**观察与草案**（纯文本 diff 建议）——**永远不会自动改任何配置/prompt/代码**；看完拍板后由人执行。手动随时可跑：`radar --mode eval`（无参数=跨天趋势表）、`radar --mode review --dry-run`（只出数据段）。
 
 ### 反馈投票常驻（serve，可选）
 
@@ -105,8 +120,8 @@ launchctl list | grep agentradar            # 确认在跑；日志见 data/stat
 # 凭证从 env 读（DINGTALK_CLIENT_ID/SECRET/ROBOT_CODE/CARD_TEMPLATE_ID/USER_ID，见本地 .env）。
 # 钉钉是国内服务、Stream 长连接不能走西方代理 → 显式剥代理：
 env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
-# 常驻：上面 launchd 的 com.agentradar.serve 已做这件事（KeepAlive + 开机自启，见 deploy/README.md）；
-# 临时挂后台也可：nohup bash scripts/run-serve.sh >data/state/serve.log 2>&1 &
+# 生产方式 = 上面 launchd 的 com.agentradar.serve（KeepAlive + 登录自启，install-launchd.sh all 已含）；
+# 手动命令仅用于调试；临时挂后台备选：nohup bash scripts/run-serve.sh >data/state/serve.log 2>&1 &
 ```
 
 点 👍/👎 → 回调经 Stream 写进 `data/feedback/{date}.json`（与终端 `radar mark` 完全同结构）。**阅读+投票折进同一张卡**：每行 = 中文理由(+⚠️可跳过) + 可点原文链接（Markdown 组件自动识别裸 URL；钉钉卡片 Markdown 不吃 `[text](url)`/`**bold**`）+ 👍赞｜👎踩 并排（ButtonList）。卡片模板见 `deploy/dingtalk-card-template.json`。完整逐篇详解仍在本地 `data/digests/` 归档。
@@ -122,12 +137,12 @@ env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | **P0** | 每日管线：28 源抓取 → 分诊 → 质量门 → 中文详解 → 双语 digest → 钉钉+本地 | ✅ 已跑通 |
-| **P1** | 尺子（eval）：忠实度 eval + 排序 eval + 报告/趋势（离线 `radar --mode eval`） | ✅ 已完成 |
-| **P2** | 懂你：记忆/检索（SQLite FTS5 · CJK trigram + USER.md + LLM 选择，不向量）+ 个性化（对已会主题降权），digest 出现「与上周 X 关联」 | 🔜 下一步 |
-| **P3** | 讲到极致：批判层诚实标可跳过 + 深度一致 + 正文抓全 + 扩覆盖 | 📋 规划 |
-| **P4** | 会聊 + 自进化：对话深挖（`CLAUDE.md` 操作手册 + 对话提取记忆 + 改自己的配置）；E1 数据级 reviewer（自相关标注+eval→配置/prompt/skill diff→周报 HITL，窄白名单）；E2 代码级自指闭环（前沿技术 eval-gated 升级自己，HITL + worktree 隔离 A/B） | 📋 规划 |
+| **P1** | 尺子（eval）：忠实度 eval + 排序 eval + 报告/趋势——**已接进每日管线**（daily 跑完自动 eval 当天） | ✅ 已完成 |
+| **P2** | 懂你：记忆（SQLite FTS5 · CJK trigram + USER.md，不向量）+ 个性化（已会主题降权）——真跑 A/B 验证：已会沉下去、真前沿不误杀 | ✅ 已完成 |
+| **P3** | 讲到极致：critic 批判层诚实标 ⚠️可跳过 + V4 四轴详解 + arXiv 正文抓全（ar5iv 护栏 + 智能截断）；「扩覆盖」按 C2 决策收紧（不稀释英文前沿，源分布进 WATCHLIST 观察） | ✅ 大体落地 |
+| **P4** | 会聊 + 自进化：**E1 数据级 reviewer 已上线**（每周日自动盘点 → 草案推钉钉 → 用户拍板，零自动应用）；E 会聊（对话深挖）与 E2 代码级自指闭环（worktree A/B + HITL）仍规划 | 🔨 E1 已落地 |
 
-P0 实测：扫 28 源 → 候选 ~130 → 精选 10 → 6 篇 Opus 深读，全程订阅、零报错。
+P0 实测：扫 28 源 → 候选 ~130 → 精选 10 → 6 篇深读，全程订阅、errors=0、四渠道投递（阅读页/钉钉卡/本地/通知）。
 
 ---
 
@@ -150,16 +165,19 @@ P0 实测：扫 28 源 → 候选 ~130 → 精选 10 → 6 篇 Opus 深读，全
 ```
 agent-radar/
 ├── radar/                    核心包（domain + ports，很少改）
-│   ├── cli.py                唯一入口：--mode daily|weekly|validate|doctor|status|...
+│   ├── cli.py                唯一入口：--mode daily|weekly|validate|doctor|status|eval|review|serve + mark 子命令
 │   ├── core/                 models(契约) · ports(接口) · registry(自注册) · pipeline · config · runner · io
 │   ├── sources/              源适配器：rss · arxiv · hackernews · github_releases · hf_papers · html
-│   ├── stages/               流水线段：fetch · triage · quality_gate · deepread · synthesize · deliver
+│   ├── stages/               流水线段：fetch · triage · quality_gate · rerank · critic · deepread · synthesize · deliver
 │   ├── quality/              质量规则：noise_blocklist · threshold · cap
-│   ├── channels/             投递：dingtalk(加签) · local · macos
+│   ├── channels/             投递：web_reader(CF Pages) · dingtalk_card(互动卡) · local · macos · dingtalk(加签)
+│   ├── memory/               内容记忆（SQLite FTS5）
+│   ├── eval/                 P1 尺子：faithfulness · ranking · report（每日自动跑）
+│   ├── self_improve/         E1 周度 reviewer（review.py）+ 泄漏扫描（leak_scan.py）
 │   ├── llm/                  LLM 后端：claude_code(claude -p, 默认)
 │   └── obs/                  可观测：结构化日志 + 全链路 trace
 ├── config/                   sources.yaml · taxonomy.yaml · blocklist.yaml · config.example.toml
-├── prompts/                  triage.md · deepread.md（提示词即数据，可调）
+├── prompts/                  triage · rerank · critic · deepread · eval_* · review（提示词即数据，可调）
 ├── tests/                    单测（注入 fake LLM，无需网络/真实调用）
 ├── data/                     运行产物（gitignored）：candidates · digests · state(seen.json) · trace
 └── docs/                     SPEC.md（完整需求）· sample-digest.md（真实样例）

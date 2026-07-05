@@ -141,6 +141,7 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 自指闭环——**把每天调研到的前沿技术用来升级自己**——拆成 E1（先做）+ E2（远期可选）：
 
 - **E1 · 数据级 reviewer（近期、低风险、即时价值）★先做**：一个 Hermes `background_review.py` 式的 reviewer——读 `prompts/triage.md` **已经在 emit** 的 `self_applicable`+`target_component` 标注 + `data/eval/{date}.json` 的 eval 结果 → 提一个 **prompt/config/blocklist/weight 的 diff**（含原"参数级"的调源权重/话题侧重/阈值 + 从深读正文 discover 新高信号源）→ **周报给用户拍板（HITL）→ 应用**。**这是「已有标注钩子 + 已有 eval 判据」接成闭环，不碰代码、不需向量、不需 worktree。** 安全模式抄两家：自维护 reviewer 用**极窄工具白名单**（CC `compact.ts:1125` 压缩 agent 拒绝全部工具；Hermes `background_review.py:459` 只白名单 memory+skills）。
+  **〔落地注 2026-07-05〕E1 第一步已上线**：`radar --mode review`（launchd 每周日 21:00 自动跑）聚合 eval 趋势 / 👍👎 投票 / top-10 源分布 / 自相关标注 / critic 统计 / WATCHLIST → 观察+草案周报（`data/self_improve/reviews/`）+ top-line 摘要自动推钉钉 1v1（推送前过与提交物同口径的泄漏自检）。本轮**只草案、零自动应用**——「应用」仍由用户拍板后人工执行；eval 本体同日起接在每日 daily 之后自动跑（失败只 log、逐篇 checkpoint 次日续）。reviewer 本体是聚合代码 + 单次 LLM 草案调用，无任何写配置/写代码工具。
 - **E2 · 代码级自指闭环（远期、可选、强护栏）⚠最后做、非必须**：agent 读自己的 `radar/` 代码产出改动 diff → **git worktree 隔离**跑改动，用**冻结基准集**(过往候选池 + 用户 👍/👎 + faithfulness 标注)做 **A/B** → 过 eval + 护栏 → diff 进周报让用户拍板 → commit；回归自动 rollback。护栏：eval 客观门控 + worktree 隔离 + git 可回滚 + HITL + 自我修改代码必须先过 `pytest`+eval 才允许 commit。**注**：Hermes 自己的自进化也**只到 skill/memory 数据层、不改引擎代码**（`memory_tool.py`/`skill_manager_tool.py` 路径围栏）——E2 是更大的赌注，**别让它阻塞 E1 的即时价值**。
 
 > **优先级红线**：`P1 eval 闭环断裂`——尺子已建、却**无人消费** eval 结果——是"系统会不会**自我变好**"的存亡问题；**E1 正是接这个闭环**，应在 E2 之前做。
@@ -171,11 +172,11 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 
 - **P0 每日管线** ✅ 已跑通（fetch→triage→quality_gate→rerank→deepread→synthesize→deliver，28 源，中文详解，钉钉+本地）
 - **P0-H 加固 + P1 尺子（eval）** ✅ 已完成（D/C/B/A/E 加固 + 忠实度/排序 eval + 报告/趋势；Phase A 钉钉投票收口）
-- **P2 懂你（记忆 + 个性化）** 🔜 下一步（**SQLite FTS5 + USER.md + LLM 选择**，非向量；Recall/Remember；**对他已会主题降权 = 破"全都重要"**，digest 出现「与上周 X 关联」）
-- **P3 讲到极致** 📋（批判层诚实标可跳过 + 深度一致 + 正文抓全 + 扩覆盖）
-- **P4 会聊 + 自进化** 📋（对话深挖；**E1 数据级 reviewer**：自相关标注+eval→配置/prompt diff→周报 HITL〔先做、窄白名单〕；**E2 代码级自指闭环**：worktree A/B→HITL〔远期可选、强护栏〕）
+- **P2 懂你（记忆 + 个性化）** ✅ 已完成（**SQLite FTS5 + USER.md**，非向量；`remember` stage + rerank 直查记忆〔LEAN：独立 Recall 暂缓〕；**对他已会主题降权**真跑 A/B 验证：已会沉、真前沿不误杀；P0 隐私修复后首次干净成立）
+- **P3 讲到极致** ✅ 大体落地（critic 批判层诚实标可跳过〔换名额不砍名额〕+ V4 四轴详解 + 正文抓全〔arXiv 全文 + ar5iv 重定向护栏 + 智能截断〕；「扩覆盖」按 C2 决策**收紧**——不稀释英文前沿、源分布进 WATCHLIST 观察）
+- **P4 会聊 + 自进化** 🔨 E1 第一步已落地（2026-07-05：`--mode review` 每周日自动盘点 → 草案摘要推钉钉 → 用户拍板，**零自动应用**；见 §9 落地注）；E 会聊（对话深挖）与 **E2 代码级自指闭环**〔worktree A/B→HITL，远期可选、强护栏〕仍规划
 
-> **优先级红线**：`P1 eval 闭环断裂`——尺子已建却无人消费 eval 结果，**E1 接上它**才让系统真的自我变好。
+> **优先级红线**：`P1 eval 闭环断裂`——尺子已建却无人消费 eval 结果，**E1 接上它**才让系统真的自我变好。**〔2026-07-05 已接上〕**：eval 每日自动跑（daily 后链式）+ review 每周自动盘点并送达，用户只拍板。
 每阶段都可独立交付、可演示。每个组件开工前先做 JIT 前沿调研。
 
 ## 13. 协作方式
