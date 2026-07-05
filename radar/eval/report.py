@@ -12,6 +12,7 @@ Three honesty red lines (set by Block ① / ②, enforced here too):
 """
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Optional
 
 from ..core.config import Paths
@@ -202,10 +203,16 @@ def trend_rows(schema_version: int) -> list[dict]:
         r = rep.get("ranking") or {}
         fb = r.get("feedback") or {}
         j = r.get("independent_judge") or {}
+        # grounding mix per day — sidecar (exact) vs full_text (approximate) days must not
+        # be read as one continuous line, so the trend surfaces what each mean stands on.
+        g = Counter(it.get("grounding_source") or "?"
+                    for it in f.get("items", []) if it.get("status") == "scored")
         rows.append({
             "date": rep.get("date") or p.stem,
             "faith": f.get("mean_support_rate"),
             "n_scored": f.get("n_scored", 0), "n_total": f.get("n_total", 0),
+            "grounding": "+".join(f"{k}×{v}" for k, v in sorted(g.items())) or "—",
+            "g_kinds": sorted(g),
             "fb_signal": bool(fb.get("is_signal")),
             "fb_acc": fb.get("pairwise_accuracy"), "fb_pairs": fb.get("n_pairs", 0),
             "tau": j.get("kendall_tau"), "judge_n": j.get("n"),
@@ -219,14 +226,18 @@ def print_trend(schema_version: int, min_days: int = 3) -> int:
         print("还没有可用的 eval 报告（data/eval/*.json）——先跑 `radar --mode eval <date>`。")
         return 0
     print(f"\n=== eval 趋势（{len(rows)} 天，schema v{schema_version}）===")
-    print(f"{'日期':<12}{'忠实度(覆盖)':<22}{'排序-反馈':<22}{'独立裁判τ〔诊断〕'}")
+    print(f"{'日期':<12}{'忠实度(覆盖)':<22}{'grounding':<24}{'排序-反馈':<22}{'独立裁判τ〔诊断〕'}")
     for r in rows:
         faith = (f"{_pct(r['faith'])} ({r['n_scored']}/{r['n_total']})"
                  if r["faith"] is not None else f"—（{r['n_total']} 全跳过）")
         fbk = (f"{_pct(r['fb_acc'])}（{r['fb_pairs']}对）" if r["fb_signal"]
                else f"样本太少（{r['fb_pairs']}对）")
         tau = f"τ={r['tau']} (n={r['judge_n']})" if r["tau"] is not None else "—"
-        print(f"{r['date']:<12}{faith:<22}{fbk:<22}{tau}")
+        print(f"{r['date']:<12}{faith:<22}{r.get('grounding', '—'):<24}{fbk:<22}{tau}")
+    kinds = {k for r in rows for k in r.get("g_kinds", [])}
+    if kinds:
+        print("\ngrounding：sidecar=深读模型真看的原文（精确）；full_text=近似兜底（可能假阳性）。"
+              "混合 grounding 的天、以及详解格式改版（压缩件→四轴）前后的天，均值不可直接连线比较。")
     if len(rows) < min_days:
         print(f"\n⚠ 数据还少（{len(rows)} 天），趋势不足为凭——多跑几天再看。"
               "（arXiv 全文修复后，新 daily 的 arXiv 条目忠实度应在此表上走高。）")
