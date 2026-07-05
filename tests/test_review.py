@@ -191,6 +191,36 @@ def test_render_markdown_humanized_trend():
     _assert_human(md)
 
 
+def test_render_curated_no_raw_dumps():
+    """页面纪律第二条：只放计算过的人话结论，不罗列原始清单（论文题目墙/逐日源分布/清单原文）。"""
+    g = _g_with_trend()
+    g["self_applicable"] = [
+        {"date": "2026-07-05", "id": "a", "title": "Some Long English Paper Title",
+         "target_component": "memory"},
+        {"date": "2026-07-03", "id": "b", "title": "Another Paper", "target_component": "orchestration"},
+        {"date": "2026-06-01", "id": "c", "title": "Old Out Of Week", "target_component": "eval"},
+    ]
+    g["watchlist"] = "# WATCHLIST\n\n## 1. 源分布（等干净跑）\n- 盯着豁免例句内部判据\n"
+    md = review.render_markdown(g, None, "x", review.build_summary(g, None, "x"), "2026-07-05")
+    assert "Some Long English Paper Title" not in md            # 不罗列论文题目
+    assert "Old Out Of Week" not in md                          # 只统计本周（7 天窗）
+    assert "有 2 条与雷达自己的构造直接相关" in md and "记忆 1 条" in md and "编排 1 条" in md
+    assert "本周 1 期日报共精选 10 条" in md                     # 来源分布=计算过的散文
+    assert "arXiv 5 条" in md
+    assert "1. 源分布（等干净跑）" in md                         # 清单只列条目名
+    assert "盯着豁免例句内部判据" not in md                       # 清单正文（开发语言）不上页面
+    _assert_human(md)
+
+
+def test_render_trend_rows_capped():
+    g = _g_with_trend()
+    row = dict(g["eval_trend"][0])
+    g["eval_trend"] = [dict(row, date=f"2026-06-{10 + i:02d}") for i in range(10)]
+    md = review.render_markdown(g, None, "x", "s", "2026-07-05")
+    assert "2026-06-10" in md                                   # 最新 8 行在
+    assert "2026-06-19" not in md and "只列最近 8 次" in md      # 第 9 行起截断且有说明
+
+
 # ---- run_review (dry) ----
 def test_run_review_dry_writes_only_review_file(tmp_path, monkeypatch):
     _wire_paths(tmp_path, monkeypatch)

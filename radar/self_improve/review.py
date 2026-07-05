@@ -28,14 +28,14 @@ import json
 import os
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import requests
 
 from ..core.config import Paths, RadarConfig, load_config
 from ..core.io import atomic_write_text, read_json
-from ..core.text import demote_headings
+from ..core.text import demote_headings, smart_truncate
 from ..eval import report as eval_report
 from ..eval.ranking import MIN_PAIRS
 from ..eval.run import EVAL_SCHEMA_VERSION
@@ -106,7 +106,7 @@ def gather(now: Optional[str] = None) -> dict:
                 continue
             skips = [i for i in items if isinstance(i, dict) and i.get("skip")]
             crit.append({"date": (d.get("date") or p.stem), "n": len(items), "n_skip": len(skips),
-                         "skips": [{"title": (s.get("title") or "")[:60],
+                         "skips": [{"title": smart_truncate(s.get("title") or "", 60),
                                     "conf": s.get("conf"), "why": s.get("why")} for s in skips]})
     except Exception:  # noqa: BLE001
         pass
@@ -233,9 +233,26 @@ def build_summary(g: dict, draft: Optional[str], draft_reason: Optional[str]) ->
 
 
 # ---------------- render（周报 markdown——会渲染成阅读页，同一套术语纪律） ----------------
+# 纪律第二条（用户 2026-07-05 晚追加）：页面只放**计算过的人话结论**，不罗列原始清单
+# （论文题目墙/逐日源分布/观察清单原文都是给机器或审计看的，原始数据在 data/ 各文件里一字不丢）。
 def _human_grounding(s: Optional[str]) -> str:
     """'sidecar×6' / 'full_text×2+sidecar×4' → 人话（×N＝按该口径核对的篇数）。"""
     return (s or "—").replace("sidecar", "深读原文").replace("full_text", "重取原文")
+
+
+_COMPONENT_CN = {"memory": "记忆", "orchestration": "编排", "eval": "评测", "deepread": "深读",
+                 "quality_gate": "质量闸", "llm_backend": "模型后端", "triage": "粗筛",
+                 "rerank": "排序", "fetch": "抓取", "synthesize": "成稿", "deliver": "投递"}
+_TREND_ROWS_CAP = 8      # 页面只放最近 8 次抽查，更早的在本地数据里
+
+
+def _week_dates(date: str, days: int = 7) -> set[str]:
+    """The review week = `date` and the 6 days before it (deterministic, string dates)."""
+    try:
+        end = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        return set()
+    return {(end - timedelta(days=i)).isoformat() for i in range(days)}
 
 
 def render_markdown(g: dict, draft: Optional[str], draft_reason: Optional[str],
@@ -247,12 +264,14 @@ def render_markdown(g: dict, draft: Optional[str], draft_reason: Optional[str],
     L.append("## 一眼看完\n")
     L.append(summary + "\n")
 
+    wk = _week_dates(date)
+
     L.append("## 1. 详解质量走势（忠实度抽查）\n")
     trend = g.get("eval_trend") or []
     if trend:
         L.append("| 日期 | 忠实度（核查/全部） | 核对依据 | 投票对比 | 复排一致度 τ（仅诊断） |")
         L.append("|---|---|---|---|---|")
-        for r in trend:
+        for r in trend[:_TREND_ROWS_CAP]:
             faith = (f"{round(r['faith'] * 100)}%（{r.get('n_scored', 0)}/{r.get('n_total', 0)} 篇）"
                      if r.get("faith") is not None else f"—（{r.get('n_total', 0)} 篇全跳过）")
             fbk = (f"{round((r.get('fb_acc') or 0) * 100)}%（{r.get('fb_pairs', 0)} 次对比）"
@@ -261,12 +280,17 @@ def render_markdown(g: dict, draft: Optional[str], draft_reason: Optional[str],
             L.append(f"| {r.get('date')} | {faith} | {_human_grounding(r.get('grounding'))} "
                      f"| {fbk} | {tau} |")
         L.append("")
-        L.append("**怎么读**：忠实度＝抽查深读详解、其中事实陈述能在原文找到依据的比例；"
-                 "「6/10 篇」＝当天 10 条里 6 条有完整详解（其余是一句话简介，无需核查）。"
-                 "核对依据：「深读原文」＝对着深读模型当时真实读到的原文核对（准）；"
-                 "「重取原文」＝事后重新抓的原文（可能有出入）——两种口径的天不能直接连成一条线比，"
-                 "详解格式改版前后的天同理。投票对比＝同一天里赞×踩两两组成的对比次数。"
-                 "τ＝换一个独立评委再排一遍的一致程度，只用来看排序稳不稳定，不是质量分。\n")
+        if len(trend) > _TREND_ROWS_CAP:
+            L.append(f"（只列最近 {_TREND_ROWS_CAP} 次抽查，更早的在本地数据里。）\n")
+        L.append("**怎么读**：")
+        L.append("- 忠实度＝抽查深读详解、其中事实陈述能在原文找到依据的比例；"
+                 "「6/10 篇」＝当天 10 条里 6 条有完整详解（其余是一句话简介，无需核查）。")
+        L.append("- 核对依据：「深读原文」＝对着深读模型当时真实读到的原文核对（准）；"
+                 "「重取原文」＝事后重新抓的（可能有出入）——两种口径的天、以及详解格式改版前后的天，"
+                 "别连成一条线比。")
+        L.append("- 投票对比＝同一天里赞×踩两两组成的对比次数；τ＝换个独立评委再排一遍的一致程度，"
+                 "只看排序稳不稳定，不是质量分。")
+        L.append("")
     else:
         L.append("暂无质量抽查数据——日报跑起来后每天会自动抽查一轮。\n")
 
@@ -283,33 +307,41 @@ def render_markdown(g: dict, draft: Optional[str], draft_reason: Optional[str],
     else:
         L.append("还没有投票记录（钉钉卡片上的 👍/👎 和本地 `radar mark` 都会记进来）。\n")
 
-    L.append("## 3. 每日精选的来源分布\n")
+    L.append("## 3. 本周精选来自哪里\n")
     days = g.get("digest_days") or []
-    if days:
-        L.append("每天最终入选的条目各来自哪些源（×N＝条数）：\n")
-        for d in days:
-            mix = "、".join(f"{k}×{v}" for k, v in
-                            sorted(d["sources"].items(), key=lambda kv: -kv[1]))
-            L.append(f"- {d['date']}（共 {d['n']} 条）：{mix}")
+    week_days = [d for d in days if d.get("date") in wk]
+    if week_days:
+        tot: Counter = Counter()
+        for d in week_days:
+            tot.update(d.get("sources") or {})
+        mix = "、".join(f"{k} {v} 条" for k, v in tot.most_common())
+        L.append(f"本周 {len(week_days)} 期日报共精选 {sum(tot.values())} 条：{mix}。")
+        if len(days) > 1:      # 新面孔：最近一期里此前从未出现过的源
+            seen_before = set().union(*(set(d.get("sources") or {}) for d in days[:-1]))
+            fresh = [k for k in (days[-1].get("sources") or {}) if k not in seen_before]
+            if fresh:
+                L.append(f"最近一期（{days[-1]['date']}）首次出现的源：{'、'.join(fresh)}。")
         L.append("")
     else:
-        L.append("暂无日报数据。\n")
+        L.append("本周暂无日报数据。\n")
 
-    L.append("## 4. 与雷达自身相关的条目\n")
-    sa = g.get("self_applicable") or []
-    if sa:
-        L.append("这些条目的内容与雷达自己的构造相关、将来可能反哺系统（方括号＝可能受益的环节）：\n")
-        for s in sa:
-            L.append(f"- {s['date']} [{s.get('target_component') or '?'}] {s['title']}")
-        L.append("")
+    L.append("## 4. 可反哺雷达自身的内容\n")
+    sa_week = [s for s in (g.get("self_applicable") or []) if s.get("date") in wk]
+    if sa_week:
+        comp = Counter(_COMPONENT_CN.get(s.get("target_component") or "", s.get("target_component") or "其他")
+                       for s in sa_week)
+        mix = "、".join(f"{k} {v} 条" for k, v in comp.most_common())
+        L.append(f"本周精选里有 {len(sa_week)} 条与雷达自己的构造直接相关（按可能受益的环节数：{mix}）。"
+                 "它们讲的方法可能用得回这套系统，已记录为自我改进的原料；"
+                 "若 AI 草稿从中看出可行改动，会出现在下方草案段。\n")
     else:
-        L.append("本期没有与雷达自身相关的条目。\n")
+        L.append("本周没有与雷达自身相关的条目。\n")
 
     L.append("## 5. 质检「可跳过」标记\n")
-    crit = g.get("critic") or []
-    if crit:
-        L.append("发布前的质检会把高置信的水货（重复/无实质）标出来、让出深读名额：\n")
-        for c in crit:
+    crit_week = [c for c in (g.get("critic") or []) if c.get("date") in wk]
+    if crit_week:
+        L.append("发布前的质检会把高置信的水货（重复/无实质）标出来、让出深读名额，本周拦下的：\n")
+        for c in crit_week:
             L.append(f"- {c['date']}：{c['n_skip']}/{c['n']} 条被标可跳过"
                      + ("" if not c["skips"] else "——"
                         + "；".join(f"「{s['title']}」({s['conf']}) {s['why'] or ''}".strip()
@@ -318,11 +350,17 @@ def render_markdown(g: dict, draft: Optional[str], draft_reason: Optional[str],
     else:
         L.append("暂无质检数据。\n")
 
-    L.append("## 6. 观察项清单盘点\n")
+    L.append("## 6. 观察项清单\n")
     wl = g.get("watchlist")
-    if wl:
-        L.append("（这是你定的「先不动、但要盯」清单，原文照录：）\n")
-        # 内嵌原文的 #/## 降为加粗行，别抢周报自身的层级（呈现老规矩）
+    wl_items = re.findall(r"^##\s+(.+?)\s*$", wl, re.M) if wl else []
+    if wl_items:
+        L.append(f"你定的「先不动、但要盯」共 {len(wl_items)} 项：\n")
+        for t in wl_items:
+            L.append(f"- {t}")
+        L.append("")
+        L.append("（每项的判据与出处在本地清单里；有 AI 草稿的周会在下方逐项盘点进展。）\n")
+    elif wl:
+        # 清单存在但没有 ## 条目结构 → 原文降级内嵌（#/## 降为加粗行，别抢周报层级）
         L.append(demote_headings(wl.strip()) + "\n")
     else:
         L.append("（观察项清单还没建——之后周报会逐项盘点。）\n")
@@ -331,8 +369,8 @@ def render_markdown(g: dict, draft: Optional[str], draft_reason: Optional[str],
     if draft:
         L.append(draft + "\n")
     else:
-        L.append(f"（本次 AI 草稿没生成：{draft_reason or '未调用'}——上面各节仍是完整数据。"
-                 "手动 `radar --mode review` 可随时补一次。）\n")
+        L.append(f"（本次 AI 草稿没生成——原因：{draft_reason or '未调用'}。上面各节仍是完整数据；"
+                 "下周日会自动重试，手动 `radar --mode review` 也可随时补一次。）\n")
 
     L.append("---\n*每周日自动生成：只读系统自己的数据 → 提观察与草案 → 你拍板。"
              "自动的只有「跑与送达」，任何改动都要人来做。*\n")
