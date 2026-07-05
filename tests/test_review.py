@@ -1,14 +1,24 @@
 """E1 review-mode unit tests — no network, no real LLM, no real DingTalk.
-Covers: read-only gather with per-source degradation, honest empty sections, summary
-lines (MIN_PAIRS gap / source mix / draft count), the never-auto-apply marker, dry-run
-writing ONLY the review file, DingTalk push (fake session) and the leak scanner."""
+Covers: read-only gather with per-source degradation (incl. run-health from digest archives),
+the HUMAN four-part summary（运行/质量/投票/拍板——零内部术语、每个数字带解释、绝不出现本地路径）,
+humanized report rendering, the never-auto-apply marker, dry-run writing ONLY the review file,
+push composition with the reading-page link (+ leak/deploy degradations), DingTalk push (fake
+session) and the leak scanner."""
 from __future__ import annotations
 
 import json
 
-from radar.core.config import Paths
+from radar.core.config import Paths, RadarConfig
 from radar.self_improve import review
 from radar.self_improve.leak_scan import scan_text
+
+# 用户拍板的禁用词清单：写给用户的输出（推送 + 周报模板文字）里绝不许出现的内部术语——防回归。
+FORBIDDEN = ("MIN_PAIRS", "sidecar", "grounding", "D 阶", "可比天数", "support_rate")
+
+
+def _assert_human(text: str) -> None:
+    for w in FORBIDDEN:
+        assert w not in text, f"内部术语泄进用户输出：{w}"
 
 
 # ---- fixtures ----
@@ -43,16 +53,46 @@ def _seed(tmp_path):
     (tmp_path / "WATCHLIST.md").write_text("# WATCHLIST\n\n## 1. 源分布\n- 盯着\n", encoding="utf-8")
 
 
+def _seed_archive(tmp_path, date, degraded=False):
+    """A daily digest md archive (data/digests/YYYY/MM/date.md) — run-health raw material."""
+    d = tmp_path / "digests" / date[:4] / date[5:7]
+    d.mkdir(parents=True, exist_ok=True)
+    body = "# 日报\n" + ("> ⚠️ 本日排序降级：rerank 未成功\n" if degraded else "")
+    (d / f"{date}.md").write_text(body, encoding="utf-8")
+
+
+def _g_with_trend(faith=1.0):
+    """Hand-built gather dict with an eval trend — exercises the humanized quality lines."""
+    return {
+        "generated_at": "t", "min_pairs": 10,
+        "eval_trend": [
+            {"date": "2026-07-05", "faith": faith, "n_scored": 6, "n_total": 10,
+             "grounding": "sidecar×6", "g_kinds": ["sidecar"], "fb_signal": False,
+             "fb_acc": None, "fb_pairs": 0, "tau": -0.467, "judge_n": 10},
+            {"date": "2026-06-26", "faith": 0.9, "n_scored": 6, "n_total": 10,
+             "grounding": "full_text×6", "g_kinds": ["full_text"], "fb_signal": False,
+             "fb_acc": None, "fb_pairs": 2, "tau": 0.2, "judge_n": 10},
+        ],
+        "votes": [{"date": "2026-06-26", "up": 2, "down": 4, "pairs": 8}],
+        "digest_days": [{"date": "2026-07-05", "n": 10, "sources": {"arXiv": 5, "HN": 5}}],
+        "self_applicable": [], "critic": [], "watchlist": None,
+        "run_health": [{"date": "2026-07-03", "degraded": False},
+                       {"date": "2026-07-05", "degraded": False}],
+    }
+
+
 # ---- gather ----
 def test_gather_all_empty_degrades_honestly(tmp_path, monkeypatch):
     _wire_paths(tmp_path, monkeypatch)
     g = review.gather(now="t")
     assert g["eval_trend"] == [] and g["votes"] == [] and g["digest_days"] == []
     assert g["self_applicable"] == [] and g["critic"] == [] and g["watchlist"] is None
+    assert g["run_health"] == []
     md = review.render_markdown(g, None, "无 LLM 后端",
-                                review.build_summary(g, None, "无 LLM 后端", "x.md"), "2026-07-05")
-    assert "暂无 eval 报告" in md and "暂无投票数据" in md and "暂无 digest 数据" in md
-    assert "本期无 self_applicable" in md and "暂无 critic" in md
+                                review.build_summary(g, None, "无 LLM 后端"), "2026-07-05")
+    assert "暂无质量抽查数据" in md and "还没有投票记录" in md and "暂无日报数据" in md
+    assert "没有与雷达自身相关" in md and "暂无质检数据" in md
+    _assert_human(md)
 
 
 def test_gather_counts(tmp_path, monkeypatch):
@@ -69,6 +109,15 @@ def test_gather_counts(tmp_path, monkeypatch):
     assert "WATCHLIST" in g["watchlist"]
 
 
+def test_gather_run_health_from_archives(tmp_path, monkeypatch):
+    _wire_paths(tmp_path, monkeypatch)
+    _seed_archive(tmp_path, "2026-07-03", degraded=True)
+    _seed_archive(tmp_path, "2026-07-05", degraded=False)
+    g = review.gather(now="t")
+    assert g["run_health"] == [{"date": "2026-07-03", "degraded": True},
+                               {"date": "2026-07-05", "degraded": False}]
+
+
 def test_gather_bad_json_degrades(tmp_path, monkeypatch):
     _wire_paths(tmp_path, monkeypatch)
     (tmp_path / "feedback" / "2026-07-01.json").write_text("{broken", encoding="utf-8")
@@ -77,26 +126,48 @@ def test_gather_bad_json_degrades(tmp_path, monkeypatch):
     assert g["votes"] == [] and g["digest_days"] == []
 
 
-# ---- summary / render ----
-def test_summary_lines(tmp_path, monkeypatch):
+# ---- summary（四段人话） ----
+def test_summary_four_parts_human_and_no_paths(tmp_path, monkeypatch):
     _wire_paths(tmp_path, monkeypatch)
     _seed(tmp_path)
+    _seed_archive(tmp_path, "2026-07-05")
     g = review.gather(now="t")
-    draft = "以下均为草案，等待拍板\n1. 改 A\n2. 改 B\n"
-    s = review.build_summary(g, draft, None, "data/x.md")
-    assert "👍1/👎3" in s                     # cumulative votes (1+0 up, 2+1 down)
-    assert f"< {review.MIN_PAIRS}" in s and "还差" in s   # MIN_PAIRS gap, honest
-    assert "arXiv×2" in s and "HN×1" in s     # source mix
-    assert "草案建议 2 条" in s                # suggestion count
-    assert "data/x.md" in s                   # full-report pointer
+    draft = "**草案建议**\n以下均为草案，等待拍板\n1. 改 A\n2. 改 B\n"
+    s = review.build_summary(g, draft, None)
+    for icon in ("🩺", "🔍", "🗳", "📝"):
+        assert icon in s                       # 四段式
+    assert "👍1/👎3" in s                       # 累计票数
+    assert "凑满 10 次" in s and "还差 8 次" in s  # 差距用人话（best=2 对比，凑满 10）
+    assert "对比" in s                          # 「对」的含义有解释
+    assert "2 条改进草案" in s
+    _assert_human(s)
+    assert "data/" not in s                     # 绝不出现本地路径
 
 
-def test_render_never_autoapply_marker(tmp_path, monkeypatch):
-    _wire_paths(tmp_path, monkeypatch)
-    g = review.gather(now="t")
-    md = review.render_markdown(g, "草案体", None,
-                                review.build_summary(g, "草案体", None, "x.md"), "2026-07-05")
-    assert "不会被自动应用" in md and "拍板" in md
+def test_summary_quality_perfect_and_imperfect():
+    s = review.build_summary(_g_with_trend(1.0), None, "无 LLM 后端")
+    assert "全部 6 篇" in s and "零幻觉" in s and "另外 4 条" in s   # 6/10 的 10 有交代
+    _assert_human(s)
+    s2 = review.build_summary(_g_with_trend(0.93), None, "无 LLM 后端")
+    assert "93%" in s2 and "零幻觉" not in s2 and "点到具体位置" in s2
+    _assert_human(s2)
+
+
+def test_summary_votes_signal_reached():
+    g = _g_with_trend()
+    g["votes"] = [{"date": "2026-07-04", "up": 3, "down": 4, "pairs": 12}]
+    s = review.build_summary(g, None, None)
+    assert "已经够排序开始学你的口味" in s and "还差" not in s
+    _assert_human(s)
+
+
+def test_summary_health_degraded_named():
+    g = _g_with_trend()
+    g["run_health"] = [{"date": "2026-07-03", "degraded": True},
+                       {"date": "2026-07-05", "degraded": False}]
+    s = review.build_summary(g, None, None)
+    assert "2026-07-03" in s and "退回了粗排" in s
+    _assert_human(s)
 
 
 def test_count_suggestions():
@@ -108,19 +179,100 @@ def test_count_suggestions():
     assert review._count_suggestions(draft) == 1
 
 
+# ---- render ----
+def test_render_markdown_humanized_trend():
+    g = _g_with_trend(0.93)
+    s = review.build_summary(g, None, "x")
+    md = review.render_markdown(g, None, "x", s, "2026-07-05")
+    assert "深读原文×6" in md and "重取原文×6" in md     # 核对依据口径人话化
+    assert "93%（6/10 篇）" in md
+    assert "怎么读" in md and "仅诊断" in md              # τ 有人话解释且标注非考核
+    assert "不会被自动应用" in md and "拍板" in md         # never-auto-apply marker
+    _assert_human(md)
+
+
 # ---- run_review (dry) ----
 def test_run_review_dry_writes_only_review_file(tmp_path, monkeypatch):
     _wire_paths(tmp_path, monkeypatch)
     _seed(tmp_path)
+    published = []
+    monkeypatch.setattr(review, "publish_review",
+                        lambda *a, **k: published.append(1) or (None, "x", "y"))
     rc = review.run_review(llm=None, dry_run=True)
     assert rc == 0
     files = list((tmp_path / "reviews").glob("*-review.md"))
     assert len(files) == 1
     body = files[0].read_text(encoding="utf-8")
     assert "dry-run" in body and "不会被自动应用" in body
+    assert not published                       # dry-run 不发布、不联网
     # nothing else appeared in the data dirs
     assert not list((tmp_path / "eval").iterdir())
     assert len(list((tmp_path / "feedback").iterdir())) == 2   # untouched fixtures
+
+
+# ---- run_review push composition（链接 / 各降级路径） ----
+class _PushRec:
+    def __init__(self):
+        self.texts = []
+
+    def __call__(self, text, **kw):
+        self.texts.append(text)
+        return True, "sent"
+
+
+def _no_leak(text, **kw):
+    return [], None
+
+
+def _wire_push(tmp_path, monkeypatch, publish_result):
+    _wire_paths(tmp_path, monkeypatch)
+    _seed(tmp_path)
+    monkeypatch.setattr(review, "publish_review", lambda md, *, date, config: publish_result)
+    monkeypatch.setattr(review, "scan_text", _no_leak)
+    rec = _PushRec()
+    monkeypatch.setattr(review, "push_summary_dingtalk", rec)
+    return rec
+
+
+def test_run_review_push_has_page_link_never_local_path(tmp_path, monkeypatch):
+    url = "https://x.pages.dev/" + "a" * 32 + "/"
+    rec = _wire_push(tmp_path, monkeypatch, (url, "ok", "leak_scan 通过"))
+    rc = review.run_review(llm=None, config=RadarConfig(), dry_run=False)
+    assert rc == 0 and len(rec.texts) == 1
+    t = rec.texts[0]
+    assert t.startswith("📊 Agent Radar 周报")
+    assert url in t and "完整周报" in t
+    assert "data/self_improve" not in t and "data/" not in t
+    _assert_human(t)
+
+
+def test_run_review_deploy_failure_push_still_sent(tmp_path, monkeypatch):
+    rec = _wire_push(tmp_path, monkeypatch, (None, "deploy_failed", "code=1"))
+    review.run_review(llm=None, config=RadarConfig(), dry_run=False)
+    t = rec.texts[0]
+    assert "没部署成功" in t and "https://" not in t
+    for icon in ("🩺", "🔍", "🗳", "📝"):
+        assert icon in t                       # 推送照发、内容完整
+    assert "data/" not in t
+
+
+def test_run_review_page_leak_says_so_honestly(tmp_path, monkeypatch):
+    rec = _wire_push(tmp_path, monkeypatch, (None, "leak", "泄漏自检命中 2 处"))
+    review.run_review(llm=None, config=RadarConfig(), dry_run=False)
+    t = rec.texts[0]
+    assert "敏感词" in t and "https://" not in t
+    assert t.startswith("📊")                  # 正文照发，只是没链接
+    assert "data/" not in t
+
+
+def test_run_review_push_gate_degrades_whole_text(tmp_path, monkeypatch):
+    url = "https://x.pages.dev/seg/"
+    rec = _wire_push(tmp_path, monkeypatch, (url, "ok", "ok"))
+    monkeypatch.setattr(review, "scan_text",
+                        lambda text, **kw: ([{"line": 1, "label": "local:x"}], None))
+    review.run_review(llm=None, config=RadarConfig(), dry_run=False)
+    t = rec.texts[0]
+    assert "不推正文" in t and url not in t     # 命中 → 整条降级为通用指针
 
 
 # ---- DingTalk push ----

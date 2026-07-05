@@ -37,8 +37,32 @@ _DEPLOY_TIMEOUT = 300   # first npx run fetches wrangler; generous ceiling
 
 def _seg(secret: str, date: str) -> str:
     """Per-day unguessable path segment: deterministic (⇒ stable URL) + one-way (⇒ days independent).
-    Callers never store/log `secret`; only this derived value leaves the function."""
+    Callers never store/log `secret`; only this derived value leaves the function.
+    The weekly review page reuses this with a "review-YYYY-MM-DD" key — the prefix namespaces
+    review segs away from day segs under the same secret."""
     return hmac.new(secret.encode(), date.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def deploy_site(project: str) -> tuple[bool, str]:
+    """One `npx wrangler pages deploy` of the whole data/web/site dir → the project's PRODUCTION
+    alias (--branch main = the production branch set at create; a repo on `master` would otherwise
+    land on a Preview alias — the 404 lesson). CF creds are read by wrangler from the inherited env
+    (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID) — never on argv, never logged.
+    Shared by the daily channel and the weekly-review publisher; returns (ok, detail)."""
+    npx = shutil.which("npx")
+    if not npx:
+        return False, "npx not found"
+    try:
+        proc = subprocess.run(
+            [npx, "-y", "wrangler", "pages", "deploy", str(Paths.web / "site"),
+             "--project-name", project, "--branch", "main", "--commit-dirty=true"],
+            cwd=str(Paths.root), capture_output=True, text=True, timeout=_DEPLOY_TIMEOUT,
+        )
+    except Exception as e:  # noqa: BLE001 — timeout / OSError
+        return False, repr(e)[:160]
+    if proc.returncode != 0:
+        return False, f"code={proc.returncode} {(proc.stderr or '').strip()[-280:]}"
+    return True, "deployed"
 
 
 @register("channel", "web_reader")
@@ -79,27 +103,8 @@ class WebReaderChannel(Channel):
         return True
 
     def _deploy(self, project: str, ctx: RunContext) -> bool:
-        """`npx wrangler pages deploy` (Direct Upload → production). CF creds are read by wrangler from
-        the inherited env (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID) — never on argv, never logged.
-        Any failure → False (caller leaves `reader_url` unset → the card keeps the arxiv link)."""
-        npx = shutil.which("npx")
-        if not npx:
-            ctx.log.warn("web_reader: npx not found — skip deploy (card falls back to arxiv)")
-            return False
-        try:
-            proc = subprocess.run(
-                # --branch main = the project's production branch (set via --production-branch at
-                # create) → lands on the STABLE production alias <project>.pages.dev, NOT a git-branch
-                # preview alias (deploying from a repo on `master` would otherwise go to Preview).
-                [npx, "-y", "wrangler", "pages", "deploy", str(Paths.web / "site"),
-                 "--project-name", project, "--branch", "main", "--commit-dirty=true"],
-                cwd=str(Paths.root), capture_output=True, text=True, timeout=_DEPLOY_TIMEOUT,
-            )
-        except Exception as e:  # noqa: BLE001 — timeout / OSError
-            ctx.log.warn("web_reader: wrangler invocation failed", error=repr(e)[:160])
-            return False
-        if proc.returncode != 0:
-            ctx.log.warn("web_reader: wrangler deploy failed", code=proc.returncode,
-                         stderr=(proc.stderr or "").strip()[-280:])
-            return False
-        return True
+        """Any failure → False (caller leaves `reader_url` unset → the card keeps the arxiv link)."""
+        ok, detail = deploy_site(project)
+        if not ok:
+            ctx.log.warn("web_reader: deploy failed (card falls back to arxiv)", detail=detail)
+        return ok

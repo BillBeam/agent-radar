@@ -8,12 +8,19 @@ DRAFT (observations + suggestions), then push a top-line summary to the DingTalk
 
 Hard lines (per the user's structural correction, 2026-07-05):
   * AUTO = run + deliver, NEVER apply — this module writes ONLY
-    data/self_improve/reviews/{date}-review.md; no config/prompt/code is ever touched.
+    data/self_improve/reviews/{date}-review.md (+ the gitignored reading page under
+    data/web/); no config/prompt/code is ever touched.
   * every data source degrades independently: missing/broken → an honest "暂无数据" line,
-    never a crash; LLM/quota failure degrades to data-sections-only; a DingTalk push
-    failure only logs (the local report already exists).
+    never a crash; LLM/quota failure degrades to data-sections-only; page-publish failure
+    only drops the link; a DingTalk push failure only logs (the local report exists).
   * the pushed summary passes the same leak_scan 口径 as committed artifacts (private
-    channel, same red line) — on any hit it degrades to a generic pointer.
+    channel, same red line) — on any hit it degrades to a generic pointer; the reading
+    page passes the same scan BEFORE it is written/deployed (publish.py).
+  * the push and the report are written FOR THE USER, not for a developer console
+    (2026-07-05 feedback: "可读性很差"): no code constants / internal field names
+    (MIN_PAIRS, sidecar, grounding, support_rate, D 阶, 可比天数…), every number carries a
+    one-phrase explanation of what it counts, and the full report is a tappable web page —
+    never a local file path on his phone.
 """
 from __future__ import annotations
 
@@ -28,10 +35,12 @@ import requests
 
 from ..core.config import Paths, RadarConfig, load_config
 from ..core.io import atomic_write_text, read_json
+from ..core.text import demote_headings
 from ..eval import report as eval_report
 from ..eval.ranking import MIN_PAIRS
 from ..eval.run import EVAL_SCHEMA_VERSION
 from .leak_scan import scan_text
+from .publish import publish_review
 
 SELF_IMPROVE_DIR = Paths.data / "self_improve"
 REVIEWS_DIR = SELF_IMPROVE_DIR / "reviews"
@@ -108,6 +117,19 @@ def gather(now: Optional[str] = None) -> dict:
                           if WATCHLIST_FILE.exists() else None)
     except Exception:  # noqa: BLE001
         g["watchlist"] = None
+
+    runs: list[dict] = []
+    try:  # 6) run health — the daily digest archives carry the rerank-degradation banner,
+        #    so「本周运行正常」in the summary rests on data, not on a claim
+        for p in sorted(Paths.digests.rglob("????-??-??.md")):
+            try:
+                degraded = "排序降级" in p.read_text(encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                continue
+            runs.append({"date": p.stem, "degraded": degraded})
+    except Exception:  # noqa: BLE001
+        pass
+    g["run_health"] = runs
     return g
 
 
@@ -120,8 +142,9 @@ def _draft(llm: Any, g: dict, config: RadarConfig) -> tuple[Optional[str], Optio
         return None, f"reviewer prompt 读取失败：{e!r}"
     payload = json.dumps(g, ensure_ascii=False, default=str,
                          separators=(",", ":"))[:_DRAFT_PAYLOAD_CAP]
+    # 480s：07-05 真跑 300s 超时一次（长中文草案 + 14K 数据），与 rerank 的同款教训（240→480）
     res = llm.complete(f"数据 JSON：\n{payload}", system=system,
-                       model=config.models.judge, timeout=300, retries=1, tag="review")
+                       model=config.models.judge, timeout=480, retries=1, tag="review")
     if getattr(res, "ok", False) and (res.text or "").strip():
         return res.text.strip(), None
     return None, (getattr(res, "error", None) or "空响应")
@@ -141,137 +164,178 @@ def _count_suggestions(draft: Optional[str]) -> int:
     return len(re.findall(r"^\s{0,3}(?:\*\*)?\d+[.、]", seg, re.M))
 
 
-# ---------------- summary（推钉钉的 top-line；四句 + 全文指针） ----------------
-def build_summary(g: dict, draft: Optional[str], draft_reason: Optional[str],
-                  out_rel: str) -> str:
-    lines: list[str] = []
+# ---------------- summary（推钉钉的正文：四段人话，像同事的周更，不是监控面板） ----------------
+# 纪律（用户 2026-07-05 拍板）：内部常量/代码词一律不得出现（MIN_PAIRS、sidecar、grounding、
+# support_rate、D 阶、可比天数…），每个数字自带一句「它数的是什么」；链接行由 run_review 拼接。
+def _health_line(g: dict) -> str:
+    runs = (g.get("run_health") or [])[-7:]
+    if not runs:
+        return "🩺 运行：本地还没有日报记录——daily 跑起来后，这里会有每周的健康小结。"
+    span = (f"最近 {len(runs)} 期日报（{runs[0]['date']} ~ {runs[-1]['date']}）"
+            if len(runs) > 1 else f"最近一期日报（{runs[0]['date']}）")
+    bad = [r["date"] for r in runs if r.get("degraded")]
+    if not bad:
+        return f"🩺 运行：{span}全部正常出刊，排序都没降级。"
+    return (f"🩺 运行：{span}里，{'、'.join(bad)} 这天排序超时退回了粗排"
+            f"（当天推送顶部有标注），其余正常。")
 
-    trend = g.get("eval_trend") or []
-    scored = [r for r in trend if r.get("faith") is not None]
-    if scored:
-        r0 = scored[0]
-        lines.append(f"📏 忠实度 {round(r0['faith'] * 100)}%"
-                     f"（{r0.get('n_scored', 0)}/{r0.get('n_total', 0)} 篇，{r0.get('date')}，"
-                     f"grounding {r0.get('grounding', '?')}）；可比天数 {len(trend)}")
-    else:
-        lines.append("📏 eval 尺子暂无读数（data/eval/ 空）")
 
+def _quality_line(g: dict) -> str:
+    r0 = next((r for r in (g.get("eval_trend") or []) if r.get("faith") is not None), None)
+    if r0 is None:
+        return "🔍 详解质量：暂无抽查数据（每天日报跑完会自动抽查一轮）。"
+    pct = round(r0["faith"] * 100)
+    n, total = r0.get("n_scored", 0), r0.get("n_total", 0)
+    briefs = max(total - n, 0)
+    tail = f"（当天另外 {briefs} 条只有一句话简介，无需核查）" if briefs else ""
+    if pct >= 100:
+        return (f"🔍 详解质量：抽查了 {r0.get('date')} 深读的全部 {n} 篇，"
+                f"每条事实陈述都能在原文里找到依据，零幻觉{tail}。")
+    return (f"🔍 详解质量：抽查了 {r0.get('date')} 深读的 {n} 篇，{pct}% 的事实陈述能在原文找到依据，"
+            f"少数出入已在完整周报里点到具体位置{tail}。")
+
+
+def _votes_line(g: dict) -> str:
     votes = g.get("votes") or []
     up = sum(v.get("up", 0) for v in votes)
     down = sum(v.get("down", 0) for v in votes)
-    best = max((v.get("pairs", 0) for v in votes), default=0)
+    total = up + down
     mp = g.get("min_pairs", MIN_PAIRS)
+    if total == 0:
+        return (f"🗳 你的投票：还没有票。在每天的卡片上顺手点 👍/👎——同一天里的赞和踩会两两组成对比，"
+                f"凑满 {mp} 次对比，排序就开始按你的口味校准。")
+    best_row = max(votes, key=lambda v: v.get("pairs", 0))
+    best = best_row.get("pairs", 0)
     if best >= mp:
-        lines.append(f"🗳 投票累计 👍{up}/👎{down}——单日 {best} 对 ≥ {mp}，排序反馈已构成信号")
-    else:
-        lines.append(f"🗳 投票累计 👍{up}/👎{down}——单日最高 {best} 对 < {mp}（MIN_PAIRS），"
-                     f"排序反馈未成信号，D 阶还差 {mp - best} 对")
+        return (f"🗳 你的投票：累计 {total} 票（👍{up}/👎{down}），已经够排序开始学你的口味了——"
+                f"之后每一票都在继续校准。")
+    example = (f"目前最多的一天是 {best_row['date']}：{best_row['up']} 赞 × {best_row['down']} 踩"
+               f"＝{best} 次对比" if best else "目前还没有哪天同时有赞和踩")
+    return (f"🗳 你的投票：累计 {total} 票（👍{up}/👎{down}）。排序校准吃的是「同一天里赞×踩的两两对比」——"
+            f"{example}，凑满 {mp} 次就开始生效——还差 {mp - best} 次，"
+            f"找一天把喜欢和不喜欢的各点几条就够了。")
 
-    days = g.get("digest_days") or []
-    if days:
-        d0 = days[-1]
-        mix = "、".join(f"{k}×{v}" for k, v in
-                        sorted(d0["sources"].items(), key=lambda kv: -kv[1]))
-        lines.append(f"📚 最近一跑（{d0['date']}）top-{d0['n']} 源：{mix}")
-    else:
-        lines.append("📚 暂无 digest 数据")
 
+def _decide_line(draft: Optional[str], draft_reason: Optional[str]) -> str:
     if draft:
-        lines.append(f"📝 草案建议 {_count_suggestions(draft)} 条待拍板（零自动应用）")
-    else:
-        lines.append(f"📝 本次无 LLM 草案（{draft_reason or '未调用'}）——仅数据观察段")
+        n = _count_suggestions(draft)
+        if n:
+            return (f"📝 待拍板：本周有 {n} 条改进草案在完整周报里等你点头——"
+                    f"系统只起草，改不改、怎么改都由你。")
+        return "📝 待拍板：本周没有需要你拍板的改进建议。"
+    return "📝 待拍板：本周的 AI 观察稿没生成成功，周报里是完整的数据记录；不影响下周自动重试。"
 
-    lines.append(f"\n全文：{out_rel}")
-    return "\n\n".join(lines)
+
+def build_summary(g: dict, draft: Optional[str], draft_reason: Optional[str]) -> str:
+    """四段：运行 / 详解质量 / 你该做什么 / 有没有要拍板的。不含链接行（推送时拼接）。"""
+    return "\n\n".join([_health_line(g), _quality_line(g),
+                        _votes_line(g), _decide_line(draft, draft_reason)])
 
 
-# ---------------- render（周报 markdown） ----------------
+# ---------------- render（周报 markdown——会渲染成阅读页，同一套术语纪律） ----------------
+def _human_grounding(s: Optional[str]) -> str:
+    """'sidecar×6' / 'full_text×2+sidecar×4' → 人话（×N＝按该口径核对的篇数）。"""
+    return (s or "—").replace("sidecar", "深读原文").replace("full_text", "重取原文")
+
+
 def render_markdown(g: dict, draft: Optional[str], draft_reason: Optional[str],
                     summary: str, date: str) -> str:
     L: list[str] = []
-    L.append(f"# Agent Radar 周度 review — {date}\n")
-    L.append(f"> 生成于 {g.get('generated_at')}。本报告只有**观察与草案**——"
-             f"**不会被自动应用**；要不要改、怎么改，由用户拍板后人工执行。\n")
-    L.append("## Top-line\n")
+    L.append(f"# Agent Radar 周报 — {date}\n")
+    L.append(f"> 生成于 {g.get('generated_at')}。这份周报只做**观察与草案**——"
+             f"**不会被自动应用**；要不要改、怎么改，由你拍板后人工执行。\n")
+    L.append("## 一眼看完\n")
     L.append(summary + "\n")
 
-    L.append("## 1. eval 趋势（尺子读数）\n")
+    L.append("## 1. 详解质量走势（忠实度抽查）\n")
     trend = g.get("eval_trend") or []
     if trend:
-        L.append("| 日期 | 忠实度(覆盖) | grounding | 排序-反馈 | 独立裁判τ〔诊断〕 |")
+        L.append("| 日期 | 忠实度（核查/全部） | 核对依据 | 投票对比 | 复排一致度 τ（仅诊断） |")
         L.append("|---|---|---|---|---|")
         for r in trend:
-            faith = (f"{round(r['faith'] * 100)}% ({r.get('n_scored', 0)}/{r.get('n_total', 0)})"
-                     if r.get("faith") is not None else f"—（{r.get('n_total', 0)} 全跳过）")
-            fbk = (f"{round((r.get('fb_acc') or 0) * 100)}%（{r.get('fb_pairs', 0)}对）"
-                   if r.get("fb_signal") else f"样本太少（{r.get('fb_pairs', 0)}对）")
-            tau = f"τ={r['tau']} (n={r.get('judge_n')})" if r.get("tau") is not None else "—"
-            L.append(f"| {r.get('date')} | {faith} | {r.get('grounding', '—')} | {fbk} | {tau} |")
+            faith = (f"{round(r['faith'] * 100)}%（{r.get('n_scored', 0)}/{r.get('n_total', 0)} 篇）"
+                     if r.get("faith") is not None else f"—（{r.get('n_total', 0)} 篇全跳过）")
+            fbk = (f"{round((r.get('fb_acc') or 0) * 100)}%（{r.get('fb_pairs', 0)} 次对比）"
+                   if r.get("fb_signal") else f"对比不足（仅 {r.get('fb_pairs', 0)} 次）")
+            tau = f"τ={r['tau']}（{r.get('judge_n')} 条）" if r.get("tau") is not None else "—"
+            L.append(f"| {r.get('date')} | {faith} | {_human_grounding(r.get('grounding'))} "
+                     f"| {fbk} | {tau} |")
         L.append("")
-        L.append("grounding：sidecar=深读模型真看的原文（精确）；full_text=近似兜底（可能假阳性）。"
-                 "混合 grounding 的天、以及详解格式改版（压缩件→四轴）前后的天，均值不可直接连线比较。\n")
+        L.append("**怎么读**：忠实度＝抽查深读详解、其中事实陈述能在原文找到依据的比例；"
+                 "「6/10 篇」＝当天 10 条里 6 条有完整详解（其余是一句话简介，无需核查）。"
+                 "核对依据：「深读原文」＝对着深读模型当时真实读到的原文核对（准）；"
+                 "「重取原文」＝事后重新抓的原文（可能有出入）——两种口径的天不能直接连成一条线比，"
+                 "详解格式改版前后的天同理。投票对比＝同一天里赞×踩两两组成的对比次数。"
+                 "τ＝换一个独立评委再排一遍的一致程度，只用来看排序稳不稳定，不是质量分。\n")
     else:
-        L.append("暂无 eval 报告（data/eval/ 空）——每日 daily 跑完会自动补一份。\n")
+        L.append("暂无质量抽查数据——日报跑起来后每天会自动抽查一轮。\n")
 
-    L.append("## 2. 投票（D 阶备粮）\n")
+    L.append("## 2. 你的投票\n")
     votes = g.get("votes") or []
     if votes:
         for v in votes:
-            L.append(f"- {v['date']}：👍{v['up']} / 👎{v['down']}（{v['pairs']} 对）")
+            L.append(f"- {v['date']}：👍{v['up']} / 👎{v['down']}（同日两两对比 {v['pairs']} 次）")
         up = sum(v["up"] for v in votes)
         down = sum(v["down"] for v in votes)
         best = max(v["pairs"] for v in votes)
-        L.append(f"- **累计 👍{up} / 👎{down}；单日最高 {best} 对，MIN_PAIRS={g.get('min_pairs')}**\n")
+        L.append(f"- **累计 👍{up} / 👎{down}；单日最多 {best} 次对比，"
+                 f"凑满 {g.get('min_pairs')} 次（同一天里每个赞×每个踩算一次）排序就开始按你的口味校准**\n")
     else:
-        L.append("暂无投票数据（钉钉卡 👍/👎 或 `radar mark`）。\n")
+        L.append("还没有投票记录（钉钉卡片上的 👍/👎 和本地 `radar mark` 都会记进来）。\n")
 
-    L.append("## 3. top-10 源分布\n")
+    L.append("## 3. 每日精选的来源分布\n")
     days = g.get("digest_days") or []
     if days:
+        L.append("每天最终入选的条目各来自哪些源（×N＝条数）：\n")
         for d in days:
             mix = "、".join(f"{k}×{v}" for k, v in
                             sorted(d["sources"].items(), key=lambda kv: -kv[1]))
-            L.append(f"- {d['date']}（{d['n']} 条）：{mix}")
+            L.append(f"- {d['date']}（共 {d['n']} 条）：{mix}")
         L.append("")
     else:
-        L.append("暂无 digest 数据。\n")
+        L.append("暂无日报数据。\n")
 
-    L.append("## 4. 自相关标注（self_applicable → E1 原料）\n")
+    L.append("## 4. 与雷达自身相关的条目\n")
     sa = g.get("self_applicable") or []
     if sa:
+        L.append("这些条目的内容与雷达自己的构造相关、将来可能反哺系统（方括号＝可能受益的环节）：\n")
         for s in sa:
             L.append(f"- {s['date']} [{s.get('target_component') or '?'}] {s['title']}")
         L.append("")
     else:
-        L.append("本期无 self_applicable 标注条目。\n")
+        L.append("本期没有与雷达自身相关的条目。\n")
 
-    L.append("## 5. critic 可跳过\n")
+    L.append("## 5. 质检「可跳过」标记\n")
     crit = g.get("critic") or []
     if crit:
+        L.append("发布前的质检会把高置信的水货（重复/无实质）标出来、让出深读名额：\n")
         for c in crit:
-            L.append(f"- {c['date']}：{c['n_skip']}/{c['n']} 标可跳过"
+            L.append(f"- {c['date']}：{c['n_skip']}/{c['n']} 条被标可跳过"
                      + ("" if not c["skips"] else "——"
                         + "；".join(f"「{s['title']}」({s['conf']}) {s['why'] or ''}".strip()
                                     for s in c["skips"][:3])))
         L.append("")
     else:
-        L.append("暂无 critic 旁车数据。\n")
+        L.append("暂无质检数据。\n")
 
-    L.append("## 6. WATCHLIST 盘点\n")
+    L.append("## 6. 观察项清单盘点\n")
     wl = g.get("watchlist")
     if wl:
-        L.append(wl.strip() + "\n")
+        L.append("（这是你定的「先不动、但要盯」清单，原文照录：）\n")
+        # 内嵌原文的 #/## 降为加粗行，别抢周报自身的层级（呈现老规矩）
+        L.append(demote_headings(wl.strip()) + "\n")
     else:
-        L.append(f"（{WATCHLIST_FILE} 不存在——先播种观察项。）\n")
+        L.append("（观察项清单还没建——之后周报会逐项盘点。）\n")
 
-    L.append("## 7. 观察与草案建议（LLM 草案 · 零自动应用）\n")
+    L.append("## 7. 观察与改进草案（AI 起草 · 等你拍板）\n")
     if draft:
         L.append(draft + "\n")
     else:
-        L.append(f"（本次 LLM 草案不可用：{draft_reason or '未调用'}——只有上面的数据观察段。"
-                 "额度恢复后手动 `radar --mode review` 可补。）\n")
+        L.append(f"（本次 AI 草稿没生成：{draft_reason or '未调用'}——上面各节仍是完整数据。"
+                 "手动 `radar --mode review` 可随时补一次。）\n")
 
-    L.append("---\n*E1 数据级 reviewer：读标注与尺子 → 提草案 → 用户拍板。自动的是「跑与送达」，不是「改」。*\n")
+    L.append("---\n*每周日自动生成：只读系统自己的数据 → 提观察与草案 → 你拍板。"
+             "自动的只有「跑与送达」，任何改动都要人来做。*\n")
     return "\n".join(L)
 
 
@@ -293,7 +357,7 @@ def push_summary_dingtalk(text: str, *, session: Any = None) -> tuple[bool, str]
         token = r.json()["accessToken"]
         payload = {"robotCode": creds["robot_code"], "userIds": [creds["user_id"]],
                    "msgKey": "sampleMarkdown",
-                   "msgParam": json.dumps({"title": "Agent Radar 周度 review", "text": text},
+                   "msgParam": json.dumps({"title": "Agent Radar 周报", "text": text},
                                           ensure_ascii=False)}
         r2 = s.post(_OTO_URL, json=payload, timeout=20,
                     headers={"x-acs-dingtalk-access-token": token,
@@ -307,10 +371,22 @@ def push_summary_dingtalk(text: str, *, session: Any = None) -> tuple[bool, str]
 
 
 # ---------------- orchestrate ----------------
+def _link_block(url: Optional[str], status: str) -> str:
+    """推送末段：有页给可点链接；没页给一句如实说明——永远不给本地文件路径（手机上是死文字）。"""
+    if url:
+        return f"\n\n👉 [点开完整周报（网页版）]({url})"
+    if status == "leak":
+        return ("\n\n⚠️ 完整周报这次没发布网页版：发布前自检发现疑似敏感词，先压下了；"
+                "周报本体已在本地生成，排查后可手动重发。")
+    if status in ("disabled", "missing"):
+        return "\n\n（完整周报已在本地归档；网页版未配置，配好后会自动带链接。）"
+    return "\n\n（完整周报网页版这次没部署成功——要点都在上面四条里，本地报告完整；下周会再试。）"
+
+
 def run_review(llm: Any = None, config: Optional[RadarConfig] = None,
                dry_run: bool = False) -> int:
-    """Gather → (LLM draft) → write reviews/{date}-review.md → push summary.
-    dry_run: data sections only — no LLM call, no DingTalk push, still writes the file."""
+    """Gather → (LLM draft) → write reviews/{date}-review.md → publish reading page → push.
+    dry_run: data sections only — no LLM call, no publish, no DingTalk push, still writes the file."""
     config = config or load_config()
     g = gather()
 
@@ -324,7 +400,7 @@ def run_review(llm: Any = None, config: Optional[RadarConfig] = None,
     date = datetime.now().strftime("%Y-%m-%d")
     out = REVIEWS_DIR / f"{date}-review.md"
     out_rel = f"data/self_improve/reviews/{date}-review.md"
-    summary = build_summary(g, draft, draft_reason, out_rel)
+    summary = build_summary(g, draft, draft_reason)
     md = render_markdown(g, draft, draft_reason, summary, date)
 
     try:
@@ -341,15 +417,22 @@ def run_review(llm: Any = None, config: Optional[RadarConfig] = None,
     print("╚════════════════════════════════════════════")
     print(f"报告 → {out_rel}")
 
-    if not dry_run:
-        # same leak 口径 as committed artifacts: a hit degrades the push, never sends原文
-        hits, warn = scan_text(summary, source="review-summary")
-        if warn:
-            print(warn)
-        push_text = summary if not hits else (
-            f"周度 review 已生成（摘要含敏感词已抑制，命中 {len(hits)} 处——先本地看）\n\n全文：{out_rel}")
-        if hits:
-            print(f"⚠ 摘要泄漏自检命中 {len(hits)} 处——已降级为通用指针，去 {out_rel} 排查。")
-        ok, detail = push_summary_dingtalk(push_text)
-        print(f"钉钉摘要推送：{'✓ ' + detail if ok else '✗ ' + detail}（失败只记录，不影响报告本体）")
+    if dry_run:
+        return 0
+
+    # 周报上阅读页：leak 闸在写盘/部署之前（publish.py）；任何失败只降级链接、不挡推送
+    url, pub_status, pub_detail = publish_review(md, date=date, config=config)
+    print(f"周报网页：{url if url else f'未发布（{pub_status}：{pub_detail}）'}")
+
+    push_text = f"📊 Agent Radar 周报 · {date}\n\n{summary}{_link_block(url, pub_status)}"
+    # same leak 口径 as committed artifacts: a hit degrades the push, never sends原文
+    hits, warn = scan_text(push_text, source="review-summary")
+    if warn:
+        print(warn)
+    if hits:
+        push_text = ("📊 本周周报已生成，但外发自检发现疑似敏感词，这次不推正文——"
+                     "请在本地打开本周周报排查后手动重发。")
+        print(f"⚠ 摘要泄漏自检命中 {len(hits)} 处——已降级为通用指针，去 {out_rel} 排查。")
+    ok, detail = push_summary_dingtalk(push_text)
+    print(f"钉钉摘要推送：{'✓ ' + detail if ok else '✗ ' + detail}（失败只记录，不影响报告本体）")
     return 0
