@@ -133,6 +133,70 @@ def test_v5_config_and_caps():
     assert D.LLM_TIMEOUT >= 900
 
 
+def test_failed_item_not_checkpointed_and_retried_next_run(tmp_path, monkeypatch):
+    """A checkpointed NO_TEXT turns a one-off LLM hiccup into a permanent hole for the day
+    (live 2026-07-06: one opus `exit 1` killed [2] for every resume). Failures must stay
+    OUT of the checkpoint so the next run retries them."""
+    monkeypatch.setattr(D, "fetch_article_text", lambda url, config=None, max_chars=0: "F" * 20000)
+
+    class FlakyLLM(_LLM):
+        def __init__(self, ok):
+            super().__init__()
+            self.ok = ok
+
+        def complete(self, prompt, **kw):
+            if not self.ok:
+                self.prompts.append(prompt)
+                return SimpleNamespace(ok=False, text="", error="exit 1: ")
+            return super().complete(prompt, **kw)
+
+    ctx = _ctx(tmp_path, monkeypatch, top_k=1)
+    it = _item(ARX1)
+    ctx.items = [it]
+    ctx.llm = FlakyLLM(ok=False)
+    D.DeepReadStage().run(ctx)
+    assert it.explain_zh == D.NO_TEXT
+    date = ctx.started_at.astimezone().strftime("%Y-%m-%d")
+    ck_file = tmp_path / "ckpt" / f"{date}.json"          # sole item failed → nothing to persist
+    ck = json.loads(ck_file.read_text(encoding="utf-8")) if ck_file.exists() else {"items": {}}
+    assert it.id not in ck["items"]                       # failure NOT checkpointed
+
+    ctx2 = _ctx(tmp_path, monkeypatch, top_k=1)
+    ctx2.started_at = ctx.started_at
+    it2 = _item(ARX1)
+    ctx2.items = [it2]
+    ctx2.llm = FlakyLLM(ok=True)
+    D.DeepReadStage().run(ctx2)
+    assert it2.explain_zh and it2.explain_zh != D.NO_TEXT  # retried, not "resumed" into failure
+
+
+def test_undiagnosed_cli_exit_is_retried(monkeypatch):
+    """`exit N:` with empty stderr carries no diagnostic — treat as transient (one lost
+    详解 costs more than a retry)."""
+    from radar.llm.claude_code import ClaudeCodeLLM
+    llm = ClaudeCodeLLM(config=None, log=None, trace=None)
+    calls = {"n": 0}
+
+    def fake_run(prompt, system, model, timeout):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return False, "exit 1: ", None
+        return True, "成功", {"usage": None}
+    monkeypatch.setattr(llm, "_run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    res = llm.complete("p", model="opus", retries=3)
+    assert res.ok and res.text == "成功" and calls["n"] == 3
+
+    calls["n"] = 0
+
+    def hard_fail(prompt, system, model, timeout):
+        calls["n"] += 1
+        return False, "exit 1: real diagnostic message", None
+    monkeypatch.setattr(llm, "_run", hard_fail)
+    res = llm.complete("p", model="opus", retries=3)
+    assert not res.ok and calls["n"] == 1                 # diagnosed failure: still no retry
+
+
 # ---- smart grounding truncation ----
 def test_smart_grounding_short_unchanged():
     assert D.smart_grounding("short text", cap=100) == "short text"

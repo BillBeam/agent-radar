@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -157,7 +158,12 @@ class ClaudeCodeLLM(LLMClient):
 
             self._record_call(model, tag, ms, None, error=(text or "?")[:100])
             last_err = text
-            transient = any(m in text.lower() for m in _OVERLOAD_MARKERS) or text == "timeout"
+            # `exit N:` with EMPTY stderr is the CLI dying without a diagnostic (seen live
+            # 2026-07-06: one opus deepread call under V5 load) — undiagnosable ⇒ worth the
+            # retry, losing a 详解 to a one-off CLI hiccup costs more than one extra attempt.
+            undiagnosed_exit = bool(re.fullmatch(r"exit \d+:\s*", text or ""))
+            transient = (any(m in text.lower() for m in _OVERLOAD_MARKERS)
+                         or text == "timeout" or undiagnosed_exit)
             if self.log:
                 self.log.warn("llm call failed", model=model, attempt=attempt,
                               transient=transient, error=text[:160])

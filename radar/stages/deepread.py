@@ -231,6 +231,11 @@ class DeepReadStage(Stage):
                                         out_chars=len(res.text or ""), thin=it.id in thin_ids)
                     except Exception:  # noqa: BLE001 — tracing must never break deepread
                         pass
+            if it.explain_zh == NO_TEXT:
+                # NEVER checkpoint a failure: a checkpointed NO_TEXT gets reused by every
+                # resume, turning a one-off LLM/fetch hiccup into a permanent hole for the
+                # day (bit us live 2026-07-06). Leaving it out costs one retry next run.
+                return
             with ckpt_lock:                               # checkpoint after each item (crash-resume)
                 ckpt["items"][it.id] = {"explain_zh": it.explain_zh, "full_text": it.full_text}
                 try:
