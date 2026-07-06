@@ -98,8 +98,8 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 ### 6.4 Quality gate（`radar/stages/quality_gate.py` + `radar/quality/rules.py`）— ✅
 可组合规则按序跑：`noise_blocklist`(配 `config/blocklist.yaml`) → `threshold`(<6 丢) → `cap`(按 score+0.4×weight 排序，封顶 max_items)。产出把关漏斗 stats。
 
-### 6.5 Deep-read（`radar/stages/deepread.py` + `_article.py`）— ✅
-对 top K 条：拉真实正文(stdlib 抽取，最多 30K 字符) → 只把正文喂给 `claude -p`(opus) → 产出结构化中文详解。**正文拉不到就降级「仅标题+链接」、不杜撰**（反幻觉）。并发 3 路。prompt 在 `prompts/deepread.md`。
+### 6.5 Deep-read（`radar/stages/deepread.py` + `_article.py`）— ✅（V5 教学级，2026-07-06）
+对**全部入选条目**（`deepread_top_k` = `daily_max_items` = 10）：拉真实正文（arXiv 走全文链 arxiv-html→ar5iv→pdf；抓取上限 120K 字符）→ 只把正文喂给 `claude -p`(**opus 钉死**)，grounding 预算 80K ≈ 全喂（超长先砍 References/Appendix、再智能截断保头尾）→ 产出 **V5 教学级七节详解**（🎯核心洞察 / 📖背景动机 / 🔧机制完整拆解＋mermaid 图 / 🧪实验证据＋表格且每个数字必须被解释 / ⚠️局限 / 💡对读者应用 / 🔗原文与深挖）。设计红线：**完整绝不靠「堆」实现**（教而非倒、裸列数字=违规）；**图表零造数**（数字/结构属 factual、忠实度尺子照核）。**正文拉不到就降级「仅标题+链接」、不杜撰**（反幻觉）；薄源注〔源材料提示〕诚实简短；critic 判定仅作 ⚠️可跳过 标注、**不再让位深读名额**。并发 3 路 + 逐篇 checkpoint（额度中断续跑）。prompt 在 `prompts/deepread.md`（V4→V5 转向理由见 decisions.md：真实使用证明读者不点原文，详解=唯一阅读→必须自足）。
 
 ### 6.6 Synthesize（`radar/stages/synthesize.py`）— ✅
 产出两个渲染：`markdown`(完整详解，落本地) + `markdown_brief`(精简：TL;DR + 每条标题/链接/一句话精华/标签)。结构确定性拼装，LLM 只写 TL;DR。持久化 `{date}.items.json` 供重渲染（不重跑 opus）。

@@ -43,7 +43,9 @@ FETCH_CAP = 120000        # fetch headroom beyond the grounding budget so smart 
                           # (tail-section cut → head+tail keep) decides what fits — NOT a blind
                           # head-cut at fetch time (07-05: [3] hit the old 80K fetch cap exactly,
                           # losing its ending before truncation could preserve it)
-LLM_TIMEOUT = 900         # V5 详解是长产出（输入 ~3×、输出 ≥2× vs V4）；真实耗时记 trace
+LLM_TIMEOUT = 1200        # V5 详解是长产出；07-06 首跑实测每篇 115–819s（77.5K grounding 的
+                          # 大部头 819s 距 900s 只剩 10% 余量）→ 1200 给慢时段留空间，
+                          # 超时只在失败路径上才有代价。真实耗时进 trace(deepread_item)
 _THIN_NOTE = ("〔源材料提示〕本篇只拿到较薄的源材料（可能仅摘要级内容）。"
               "按「源材料薄」规则诚实简短讲解，绝不注水。\n\n")
 THIN_ARXIV_CHARS = 8000   # an arXiv "full text" below this is an abstract page / redirect

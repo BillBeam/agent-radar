@@ -47,8 +47,9 @@ launchd（每天 08:30） ─> python -m radar --mode daily
    ├─ [2] Triage       claude -p 按主题 rubric 打分/打标签/判自相关（便宜模型）
    ├─ [3] Quality Gate 噪声拒绝 + 相关性硬阈值 + 封顶（可组合规则，宁缺毋滥）
    ├─ [4] Rerank       listwise 相对排序 + USER.md 已会清单降权（「对你重要且对你新」）
-   ├─ [5] Critic       「有真料吗」批判层——诚实标 ⚠️可跳过，垃圾让出深读名额
-   ├─ [6] Deep-read    拉全文（arXiv 全文 + 智能截断）→ 中文四轴详解（落原文，反幻觉）
+   ├─ [5] Critic       「有真料吗」批判层——诚实标 ⚠️可跳过（仅标注，每篇照样深读）
+   ├─ [6] Deep-read    拉全文（arXiv 全文链，抓 120K/喂 80K）→ opus 教学级七节详解＋mermaid 图＋结果表
+   │                   ——全部 10 篇都深读（顶配模型吃订阅额度：这是本系统最大的单日额度开销，约束见 docs/SPEC §4）
    ├─ [7] Synthesize   双渲染（钉钉精简版 + 完整版）
    ├─ [8] Deliver      CF Pages 阅读页 + 钉钉互动卡（👍/👎）+ 本地归档 + Mac 通知
    └─ [9] Remember     写内容记忆（FTS5）
@@ -139,7 +140,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY NO_PROXY='*' python -m radar --mode serve
 | **P0** | 每日管线：28 源抓取 → 分诊 → 质量门 → 中文详解 → 双语 digest → 钉钉+本地 | ✅ 已跑通 |
 | **P1** | 尺子（eval）：忠实度 eval + 排序 eval + 报告/趋势——**已接进每日管线**（daily 跑完自动 eval 当天） | ✅ 已完成 |
 | **P2** | 懂你：记忆（SQLite FTS5 · CJK trigram + USER.md，不向量）+ 个性化（已会主题降权）——真跑 A/B 验证：已会沉下去、真前沿不误杀 | ✅ 已完成 |
-| **P3** | 讲到极致：critic 批判层诚实标 ⚠️可跳过 + V4 四轴详解 + arXiv 正文抓全（ar5iv 护栏 + 智能截断）；「扩覆盖」按 C2 决策收紧（不稀释英文前沿，源分布进 WATCHLIST 观察） | ✅ 大体落地 |
+| **P3** | 讲到极致：critic 批判层诚实标 ⚠️可跳过 + 详解 V5 教学级（全 10 篇 opus·80K 全文 grounding·七节·mermaid 图+结果表·每个数字必须被解释，2026-07-06 起；前身 V4 四轴点燃器）+ arXiv 正文抓全（ar5iv 护栏 + 智能截断）；「扩覆盖」按 C2 决策收紧（不稀释英文前沿，源分布进 WATCHLIST 观察） | ✅ 大体落地 |
 | **P4** | 会聊 + 自进化：**E1 数据级 reviewer 已上线**（每周日自动盘点 → 草案推钉钉 → 用户拍板，零自动应用）；E 会聊（对话深挖）与 E2 代码级自指闭环（worktree A/B + HITL）仍规划 | 🔨 E1 已落地 |
 
 P0 实测：扫 28 源 → 候选 ~130 → 精选 10 → 6 篇深读，全程订阅、errors=0、四渠道投递（阅读页/钉钉卡/本地/通知）。
