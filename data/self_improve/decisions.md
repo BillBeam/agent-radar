@@ -630,8 +630,18 @@ fetch 需要它；交互跑不受影响，钉钉渠道 trust_env=False 自动剥
 自包含、10 锚点+目录（每篇标 字数·约X分钟，8–38min）+返回顶部、noindex、根 404；[N]→id
 显示序断言通过（feedback/mark 映射不破）；leak_scan 归档 md+部署页 **0 命中**。per-item
 遥测（新 trace 首战）：每篇 LLM 115–819s、均值 454s——[3] 819s 距 900s 超时仅 10% 余量
-→ LLM_TIMEOUT 提到 1200s。V4 产物全量备份 `data/real-llm-runs/v5-regen-2026-07-05/`。
-忠实度 eval 结果见该目录 evidence 文件（跑完补记于 CLAUDE.md §5）。
+→ LLM_TIMEOUT 提到 1200s。V4 产物全量备份 `data/real-llm-runs/local/v5-regen-2026-07-05/`（gitignored——内含 digest/sidecar 全文，不入公共仓库）。
+
+**忠实度终数（三轮，中途额度耗尽靠 checkpoint 零重复付费续齐）**：10/10 scored、**mean 94.9%**、
+n_factual 合计 305（V4 基线 6 篇约 100）——主张量 3 倍、篇幅 5 倍下忠实度持平 V4 基线（93/95%）。
+**尺子当天完成第一次「发现→修→重测」闭环**：薄源两篇首判 73%/60%，定性=背景知识补事实（真但
+不在 grounding=违约）；根因=`_adequate` 只认 arXiv 薄源、release 短页没吃到确定性提示 →
+THIN_NOTE_CHARS=2500（任何 <2.5K grounding 注提示）+ 提示与 system prompt 加「绝不用背景知识
+补『它是什么/能干什么/定位』」硬语 → 手术重跑两篇（详解砍掉的正是垫的背景）→ 重判 **78%/100%**。
+尺子另有两处教科书式真捕获：[1]「128k 爆炸」上色（unsupported）、[7] mermaid 图把「计算置信度」
+画错步骤（distorted）——**「图表数字/结构=factual 照核」新规第一次真实咬合**。遗留观察进
+WATCHLIST 候选：薄源上图更易越「只画原文结构」线（[4] 剩余 4 处全是解读性推断/图画推断结构）。
+全量证据：`data/real-llm-runs/2026-07-06-v5-regen.md`。
 
 **顺手排除一个假警报**：07-06 daily「耗时 8380s」实为机器睡眠（fetch monotonic 仅 205s，
 墙钟跨 2h18m=合盖），selected=0 是周一早池小（候选 29 全低于阈值/已读）非故障；若 08:30

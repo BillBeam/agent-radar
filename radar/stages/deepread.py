@@ -46,8 +46,13 @@ FETCH_CAP = 120000        # fetch headroom beyond the grounding budget so smart 
 LLM_TIMEOUT = 1200        # V5 详解是长产出；07-06 首跑实测每篇 115–819s（77.5K grounding 的
                           # 大部头 819s 距 900s 只剩 10% 余量）→ 1200 给慢时段留空间，
                           # 超时只在失败路径上才有代价。真实耗时进 trace(deepread_item)
-_THIN_NOTE = ("〔源材料提示〕本篇只拿到较薄的源材料（可能仅摘要级内容）。"
-              "按「源材料薄」规则诚实简短讲解，绝不注水。\n\n")
+THIN_NOTE_CHARS = 2500    # ANY grounding below this gets the thin note (not just arXiv stubs) —
+                          # 07-06 尺子实锤：两条 release 短页(1.2K/1.6K)没吃到提示，opus 用
+                          # 背景知识补「它是什么/各包干什么」→ 忠实度 60/73%（真但不在原文=违约）
+_THIN_NOTE = ("〔源材料提示〕本篇只拿到较薄的源材料（可能仅条目列表/摘要级内容）。"
+              "按「源材料薄」规则诚实简短讲解，绝不注水；尤其**绝不用你自己的背景知识去补"
+              "「这个东西是什么/它能干什么/它的定位」**——原文没描述的功能、性质、背景，"
+              "一律不写，或明说「原文未描述」。原文列表里有什么就讲什么。\n\n")
 THIN_ARXIV_CHARS = 8000   # an arXiv "full text" below this is an abstract page / redirect
                           # stub, not the paper (abs pages extract to ~4-6K; real bodies ≥ ~12K)
 _ELISION = "\n\n〔……原文过长，中段截断，以下为结尾部分……〕\n\n"
@@ -187,7 +192,11 @@ class DeepReadStage(Stage):
             order = {it.id: i for i, it in enumerate(eligible)}
             top.sort(key=lambda it: order[it.id])
         selected_ids = {it.id for it in top}
-        thin_ids = {it.id for it in thin}
+        # the honest-brevity note goes to arXiv stubs AND any very short page — the slot
+        # policy's `thin` stays arXiv-only (a short blog IS its whole article; it keeps
+        # its slot, it just must not be padded from prior knowledge)
+        thin_ids = ({it.id for it in thin}
+                    | {it.id for it in eligible if len(fetched.get(it.id) or "") < THIN_NOTE_CHARS})
         thin_skipped = [it for it in thin if it.id not in selected_ids]
         if thin_skipped:
             ctx.stats["deepread.thin_skipped"] = [it.id for it in thin_skipped]

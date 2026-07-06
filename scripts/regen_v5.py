@@ -54,7 +54,8 @@ def _parse_header(md: str) -> dict:
 
 
 def _backup_once(date: str, md_path: Path, items_path: Path) -> Path:
-    dst = Paths.data / "real-llm-runs" / f"v5-regen-{date}"
+    # under local/ (gitignored): the backup carries FULL digests/sidecars — never commit
+    dst = Paths.data / "real-llm-runs" / "local" / f"v5-regen-{date}"
     if dst.exists():
         return dst
     dst.mkdir(parents=True)

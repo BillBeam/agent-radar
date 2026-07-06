@@ -109,18 +109,23 @@ def test_resume_skips_probe_fetch(tmp_path, monkeypatch):
 # ---- V5: 全员深读 + 薄源标注 + 全文 grounding 常量 + 超时 ----
 def test_v5_all_items_deep_read_thin_gets_note(tmp_path, monkeypatch):
     """top_k covers every item (V5 daily) → thin/critic-flagged items are still deep-read;
-    the thin one gets the deterministic 源材料薄 note in its prompt, others don't."""
-    texts = {ARX1: "F" * 20000, ARX2: "A" * 5000, BLOG: "B" * 900}
+    the thin arXiv stub AND the very short page get the deterministic 源材料薄 note (07-06
+    尺子实锤: short release pages without the note got padded from prior knowledge), a
+    full-length page doesn't."""
+    texts = {ARX1: "F" * 20000, ARX2: "A" * 5000, BLOG: "B" * 900, ARX3: "F" * 15000}
     monkeypatch.setattr(D, "fetch_article_text", lambda url, config=None, max_chars=0: texts[url])
     ctx = _ctx(tmp_path, monkeypatch, top_k=10)
-    items = [_item(ARX1), _item(ARX2), _item(BLOG)]
+    items = [_item(ARX1), _item(ARX2), _item(BLOG), _item(ARX3)]
     ctx.items = items
     ctx.stats["critic"] = {items[0].id: {"skip": True, "conf": "high", "why": "PR"}}
     D.DeepReadStage().run(ctx)
     assert all(it.explain_zh and it.explain_zh != D.NO_TEXT for it in items)
     assert "deepread.thin_skipped" not in ctx.stats           # nobody yielded a slot
     noted = [p for p in ctx.llm.prompts if "源材料提示" in p]
-    assert len(noted) == 1 and f"链接: {ARX2}" in noted[0]     # only the thin arXiv item
+    assert len(noted) == 2                                    # arXiv stub + short page
+    assert any(f"链接: {ARX2}" in p for p in noted)
+    assert any(f"链接: {BLOG}" in p for p in noted)            # 900 chars < THIN_NOTE_CHARS
+    assert all("绝不用你自己的背景知识" in p for p in noted)      # the prior-knowledge ban has teeth
     assert all(kw.get("timeout") == D.LLM_TIMEOUT for kw in ctx.llm.kwargs)
 
 
