@@ -237,7 +237,8 @@ def print_trend(schema_version: int, min_days: int = 3) -> int:
     kinds = {k for r in rows for k in r.get("g_kinds", [])}
     if kinds:
         print("\ngrounding：sidecar=深读模型真看的原文（精确）；full_text=近似兜底（可能假阳性）。"
-              "混合 grounding 的天、以及详解格式改版（压缩件→四轴）前后的天，均值不可直接连线比较。")
+              "混合 grounding 的天、以及详解格式改版（压缩件→四轴→V5 教学级七节，2026-07-06 起）"
+              "前后的天，均值不可直接连线比较——V5 每篇 factual 条数大增，分母口径不同。")
     if len(rows) < min_days:
         print(f"\n⚠ 数据还少（{len(rows)} 天），趋势不足为凭——多跑几天再看。"
               "（arXiv 全文修复后，新 daily 的 arXiv 条目忠实度应在此表上走高。）")

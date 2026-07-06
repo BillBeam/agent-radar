@@ -40,8 +40,10 @@ from ..llm._json import salvage_objects
 
 # 详解 degrade marker emitted by deepread when no body could be fetched.
 _DEGRADE_PREFIX = "（原文"
-# mirror the deep-read truncation so the judge sees ~what the model saw
-_MAX_SOURCE_CHARS = 28000
+# mirror the deep-read grounding budget so the judge sees ~what the model saw
+# (V5: deepread feeds 80K — a judge capped at the old 28K would false-flag every claim
+# grounded in the back 2/3 of the source as unsupported)
+_MAX_SOURCE_CHARS = 80000
 # substrings that mean "the subscription/API limit was hit" → transient, abort early
 _RATE_MARKERS = ("overload", "rate", "429", "529", "limit", "quota", "usage", "exhaust")
 
@@ -121,11 +123,12 @@ def judge_item(llm: Any, item: dict, source_text: str, *,
     {"ok": False, "error_kind": ..., "error": ...} on failure (never raises)."""
     user = (f"原文:\n{source_text[:_MAX_SOURCE_CHARS]}\n\n"
             f"=====\n\n详解:\n{(item.get('explain_zh') or '').strip()}")
-    # generous ceiling: a 28K-char source under a throttled subscription is slow, and
-    # the judge's per-claim output is large. Run sequentially (max_workers=1) so each
-    # call gets full throughput rather than racing siblings into the timeout. retries=1:
-    # a timed-out judge shouldn't retry 3× (wastes tokens) — resume picks it up later.
-    parsed, res = llm.complete_json(user, system=system, model=model, timeout=420, retries=1)
+    # generous ceiling: an 80K-char source under a throttled subscription is slow, and
+    # the judge's per-claim output is large (V5 details carry more factual claims). Run
+    # sequentially (max_workers=1) so each call gets full throughput rather than racing
+    # siblings into the timeout. retries=1: a timed-out judge shouldn't retry 3× (wastes
+    # tokens) — resume picks it up later.
+    parsed, res = llm.complete_json(user, system=system, model=model, timeout=600, retries=1)
     raw = getattr(res, "text", "") or ""
 
     claims: Optional[list] = None
