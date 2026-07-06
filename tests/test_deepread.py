@@ -27,9 +27,13 @@ def _item(url, title=None):
 class _LLM:
     def __init__(self):
         self.tags = []
+        self.prompts = []
+        self.kwargs = []
 
     def complete(self, prompt, **kw):
         self.tags.append(kw.get("tag"))
+        self.prompts.append(prompt)
+        self.kwargs.append(kw)
         return SimpleNamespace(ok=True, text="这是一段中文详解。" * 20, error=None)
 
 
@@ -100,6 +104,33 @@ def test_resume_skips_probe_fetch(tmp_path, monkeypatch):
     assert it.explain_zh == "缓存详解"
     assert fetches == []            # probe reused checkpointed full_text — zero re-fetch
     assert ctx.llm.tags == []       # zero LLM calls
+
+
+# ---- V5: 全员深读 + 薄源标注 + 全文 grounding 常量 + 超时 ----
+def test_v5_all_items_deep_read_thin_gets_note(tmp_path, monkeypatch):
+    """top_k covers every item (V5 daily) → thin/critic-flagged items are still deep-read;
+    the thin one gets the deterministic 源材料薄 note in its prompt, others don't."""
+    texts = {ARX1: "F" * 20000, ARX2: "A" * 5000, BLOG: "B" * 900}
+    monkeypatch.setattr(D, "fetch_article_text", lambda url, config=None, max_chars=0: texts[url])
+    ctx = _ctx(tmp_path, monkeypatch, top_k=10)
+    items = [_item(ARX1), _item(ARX2), _item(BLOG)]
+    ctx.items = items
+    ctx.stats["critic"] = {items[0].id: {"skip": True, "conf": "high", "why": "PR"}}
+    D.DeepReadStage().run(ctx)
+    assert all(it.explain_zh and it.explain_zh != D.NO_TEXT for it in items)
+    assert "deepread.thin_skipped" not in ctx.stats           # nobody yielded a slot
+    noted = [p for p in ctx.llm.prompts if "源材料提示" in p]
+    assert len(noted) == 1 and f"链接: {ARX2}" in noted[0]     # only the thin arXiv item
+    assert all(kw.get("timeout") == D.LLM_TIMEOUT for kw in ctx.llm.kwargs)
+
+
+def test_v5_config_and_caps():
+    """V5 contract pins: opus + 全部条目深读 + 全文 grounding（这些值回退=功能回退）."""
+    from radar.core.config import ModelsConfig, RadarConfig
+    assert ModelsConfig().deepread == "opus"
+    assert RadarConfig().deepread_top_k == RadarConfig().daily_max_items == 10
+    assert D.GROUNDING_CAP == 80000 and D.FETCH_CAP == 120000
+    assert D.LLM_TIMEOUT >= 900
 
 
 # ---- smart grounding truncation ----

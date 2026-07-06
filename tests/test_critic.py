@@ -1,8 +1,8 @@
-"""Phase C tests — critic verdicts + deepread gate/checkpoint + per-call trace.
+"""Phase C tests — critic verdicts (annotation-only since V5) + deepread checkpoint + trace.
 
-Wiring + safety are asserted here (parse/store, gate predicate, conf normalization,
-annotation render, checkpoint resume, trace roll-up). The critic's JUDGMENT (flag
-garbage, never误标 hardcore) is proven by the real-LLM self-prove, not unit tests.
+Wiring + safety are asserted here (parse/store, conf normalization, annotation render,
+V5 no-gating, checkpoint resume, trace roll-up). The critic's JUDGMENT (flag garbage,
+never误标 hardcore) is proven by the real-LLM self-prove, not unit tests.
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ class FakeLLM:
 
 # ---- critic stage: parse + store + sidecar + predicates ----
 def test_critic_stage_stores_verdicts_and_sidecar(tmp_path, monkeypatch):
-    from radar.stages.critic import CriticStage, high_conf_skip
+    from radar.stages.critic import CriticStage
     monkeypatch.setattr(Paths, "critic", tmp_path / "critic")
     ctx = _ctx()
     a, b = _item(title="PR", url="http://x/pr"), _item(title="hardcore", url="http://x/hard")
@@ -61,7 +61,6 @@ def test_critic_stage_stores_verdicts_and_sidecar(tmp_path, monkeypatch):
     CriticStage().run(ctx)
     assert ctx.stats["critic"][a.id] == {"skip": True, "conf": "high", "why": "厂商发布稿"}
     assert ctx.stats["critic"][b.id]["skip"] is False
-    assert high_conf_skip(ctx, a) is True and high_conf_skip(ctx, b) is False
     assert ctx.llm.calls == ["critic"]                       # tagged for the trace
     date = ctx.started_at.astimezone().strftime("%Y-%m-%d")
     sc = json.loads((tmp_path / "critic" / f"{date}.json").read_text(encoding="utf-8"))
@@ -69,8 +68,8 @@ def test_critic_stage_stores_verdicts_and_sidecar(tmp_path, monkeypatch):
 
 
 def test_critic_invalid_conf_normalized_to_low(tmp_path, monkeypatch):
-    """A malformed conf must degrade to 'low' so it can NEVER silently gate deepread (safe)."""
-    from radar.stages.critic import CriticStage, high_conf_skip
+    """A malformed conf must degrade to 'low' so the ⚠️ label wording stays honest（疑似）."""
+    from radar.stages.critic import CriticStage
     monkeypatch.setattr(Paths, "critic", tmp_path / "critic")
     ctx = _ctx()
     a = _item(title="x", url="http://x/x")
@@ -78,15 +77,13 @@ def test_critic_invalid_conf_normalized_to_low(tmp_path, monkeypatch):
     ctx.llm = FakeLLM(json_resp=[{"i": 0, "skip": True, "conf": "garbage", "why": "y"}])
     CriticStage().run(ctx)
     assert ctx.stats["critic"][a.id]["conf"] == "low"
-    assert high_conf_skip(ctx, a) is False                   # malformed → never省 opus
 
 
-def test_high_conf_skip_neutral_without_critic():
-    from radar.stages.critic import high_conf_skip, critic_verdict
+def test_critic_verdict_neutral_without_critic():
+    from radar.stages.critic import critic_verdict
     ctx = _ctx()
     it = _item()
-    assert high_conf_skip(ctx, it) is False                  # no critic run → neutral
-    assert critic_verdict(ctx, it)["skip"] is False
+    assert critic_verdict(ctx, it)["skip"] is False          # no critic run → neutral
 
 
 # ---- brief annotation ----
@@ -102,8 +99,8 @@ def test_brief_annotation_renders():
     assert "⚠️" not in _render_brief(it, 1, {"skip": False, "conf": "low", "why": ""})
 
 
-# ---- deepread gate: high-conf skip loses its slot; borderline + keep stay ----
-def test_deepread_gate_skips_high_conf_only(tmp_path, monkeypatch):
+# ---- V5: critic verdicts are annotation-only — deepread writes EVERY item regardless ----
+def test_deepread_ignores_critic_verdicts(tmp_path, monkeypatch):
     from radar.stages import deepread as dr
     monkeypatch.setattr(dr, "fetch_article_text", lambda url, **kw: "x" * 500)
     monkeypatch.setattr(Paths, "deepread_ckpt", tmp_path / "ckpt")
@@ -120,9 +117,8 @@ def test_deepread_gate_skips_high_conf_only(tmp_path, monkeypatch):
     }
     ctx.llm = FakeLLM(text="这是中文详解。" * 30)
     dr.DeepReadStage().run(ctx)
-    assert keep.explain_zh and keep.explain_zh != dr.NO_TEXT       # deep-read
-    assert skip_lo.explain_zh and skip_lo.explain_zh != dr.NO_TEXT  # borderline STILL deep-read
-    assert skip_hi.explain_zh is None                             # high-conf gated out, never touched
+    for it in (keep, skip_lo, skip_hi):        # ⚠️ label stays in the brief; 详解照写
+        assert it.explain_zh and it.explain_zh != dr.NO_TEXT
 
 
 # ---- deepread checkpoint: a re-run reuses completed items (skips LLM) ----

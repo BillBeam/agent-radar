@@ -2,13 +2,13 @@
 
 Orthogonal to rerank's "对他新" novelty: rerank orders by importance × novelty-to-him;
 critic flags items that LOOK important but are low-signal (vendor PR, rehash surveys,
-clickbait, no-data thought-pieces, second-hand). v1 is annotation-first + safe:
+clickbait, no-data thought-pieces, second-hand). Annotation-ONLY + safe:
 - runs on the **≤10 selected finalists** (`ctx.items`, post-rerank) — NOT the triage pool.
 - verdicts land on `ctx.stats["critic"]` (Item is frozen; `tags` would corrupt the memory
   signal; `reason` is the brief why).
-- only HIGH-confidence obvious garbage yields its deepread slot to the next-better item
-  (deepread reads the dict; a quality SWAP, not a cost saving — see high_conf_skip);
-  borderline is annotated but STILL deep-read. Never silently cut — he's the expert.
+- V5: verdicts surface as the honest ⚠️可跳过 label in the brief + reading page, and
+  NOTHING else — they no longer gate deepread (每一篇都要详解, user decision). Never
+  silently cut — he's the expert and reads with the label in view.
 Degrades to a no-op if the LLM is absent/fails (no annotation, deepread unchanged).
 """
 from __future__ import annotations
@@ -31,15 +31,6 @@ def critic_verdict(ctx: RunContext, item: Item) -> dict:
     """The critic verdict for an item, or a neutral default. Shared by deepread + synthesize
     so there's one definition of 'what did critic say about this item'."""
     return (ctx.stats.get("critic") or {}).get(item.id, _NEUTRAL)
-
-
-def high_conf_skip(ctx: RunContext, item: Item) -> bool:
-    """High-confidence obvious garbage → drop it from the deepread pool. NOTE: a quality
-    SWAP, not a cost saving — deepread still does top_k; the garbage just yields its slot to
-    the next-better item (opus is only saved at the boundary when eligible < top_k).
-    Borderline (conf=low) is NEVER skipped — only annotated + still deep-read."""
-    v = critic_verdict(ctx, item)
-    return bool(v.get("skip") and v.get("conf") == "high")
 
 
 @register("stage", "critic")

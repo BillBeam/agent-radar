@@ -118,7 +118,7 @@ class ModelsConfig(BaseModel):
     """Model tiering to control subscription quota."""
     model_config = ConfigDict(extra="forbid")
     triage: str = "haiku"              # cheap, high-volume scoring
-    deepread: str = "sonnet"           # grounded 详解
+    deepread: str = "opus"             # V5 教学级完整深读：顶配模型钉死（吃订阅额度，每天 10 篇长文）
     synthesize: str = "sonnet"
     judge: str = "sonnet"              # offline eval judge (faithfulness / ranking); quality > cost
     critic: str = "sonnet"             # 批判层「有真料吗」判断；分寸需好判断，≤10 条一次调用很便宜
@@ -145,7 +145,7 @@ class RadarConfig(BaseModel):
     finalist_pool: int = 24            # how many survivors go to the rerank stage
     max_per_source: int = 3            # diversity: max items from one source in the final selection
     max_undated_per_source: int = 8    # bounded history: cap dateless (back-catalog) items per source
-    deepread_top_k: int = 6
+    deepread_top_k: int = 10           # V5: 每天全部条目都深读（=daily_max_items），不再只挑 6 篇
 
     token_budget_per_run: int = 200_000
     # --- proxy (first-class; many sources are Western and need a proxy from CN) ---

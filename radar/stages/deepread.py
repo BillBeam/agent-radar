@@ -5,19 +5,25 @@ to the LLM, which writes a structured Chinese explanation. Grounding the model i
 fetched text (not its prior) is the anti-hallucination mechanism. Items whose text
 can't be fetched degrade to title+link rather than fabricating. Runs concurrently.
 
-Slot policy (7.3 复盘): the top_k slots go to the highest-ranked FULLY-GROUNDED items —
-an arXiv item whose full text couldn't really be fetched (abstract-page fallback /
-ar5iv-redirect stub) yields its slot to the next fully-grounded item, because a 详解
-written off an abstract spends the most expensive stage on the least material. A quality
-SWAP, not a saving (mirrors the critic gate); if there aren't enough fully-grounded
-items, thin ones fill the remaining slots (honest degrade — the V4 prompt states
-truncation/thin grounding instead of papering over it).
+V5 (完整教学级深读): every digest item gets a full 详解 — deepread_top_k == daily_max_items,
+the model is pinned to opus, and the WHOLE fetched body is fed (GROUNDING_CAP == 80K; the
+old 28K budget threw away 65% of what we fetched and was the direct cause of the 07-05
+"关键结果表在缺失段" self-reports). Critic verdicts are annotation-only (brief/reading-page
+⚠️ label) — they no longer gate deepread: the user decided 每一篇都要详解.
+
+Slot policy (7.3 复盘, still live for the eligible > top_k case): the top_k slots go to the
+highest-ranked FULLY-GROUNDED items — an arXiv item whose full text couldn't really be
+fetched (abstract-page fallback / ar5iv-redirect stub) yields its slot to the next
+fully-grounded item. With V5's top_k covering every item this naturally never triggers on a
+normal daily; thin items are still deep-read, with an explicit 「源材料薄」 note injected so
+the prompt's honest-brevity mode kicks in deterministically.
 """
 from __future__ import annotations
 
 import hashlib
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -28,12 +34,18 @@ from ..core.ports import Stage
 from ..core.registry import register
 from ._article import fetch_article_text
 from ._arxiv import arxiv_id_from_url
-from .critic import high_conf_skip
 
 MIN_BASIS_CHARS = 200
 NO_TEXT = "（原文正文未能获取，仅标题+链接可读）"
-GROUNDING_CAP = 28000     # chars of source text the LLM sees (budget unchanged)
-FETCH_CAP = 80000         # fetch beyond the budget so smart truncation can keep head AND tail
+GROUNDING_CAP = 80000     # V5: feed the WHOLE fetched body (≈20–30K tokens — opus 窗口绰绰有余);
+                          # the old 28K budget discarded 65% of an 80K fetch
+FETCH_CAP = 120000        # fetch headroom beyond the grounding budget so smart truncation
+                          # (tail-section cut → head+tail keep) decides what fits — NOT a blind
+                          # head-cut at fetch time (07-05: [3] hit the old 80K fetch cap exactly,
+                          # losing its ending before truncation could preserve it)
+LLM_TIMEOUT = 900         # V5 详解是长产出（输入 ~3×、输出 ≥2× vs V4）；真实耗时记 trace
+_THIN_NOTE = ("〔源材料提示〕本篇只拿到较薄的源材料（可能仅摘要级内容）。"
+              "按「源材料薄」规则诚实简短讲解，绝不注水。\n\n")
 THIN_ARXIV_CHARS = 8000   # an arXiv "full text" below this is an abstract page / redirect
                           # stub, not the paper (abs pages extract to ~4-6K; real bodies ≥ ~12K)
 _ELISION = "\n\n〔……原文过长，中段截断，以下为结尾部分……〕\n\n"
@@ -144,13 +156,9 @@ class DeepReadStage(Stage):
         system = Paths.prompts.joinpath("deepread.md").read_text(encoding="utf-8")
         prompt_fp = hashlib.sha1(system.encode("utf-8")).hexdigest()[:12]
 
-        # critic gate: high-confidence obvious garbage yields its deepread slot to the
-        # next-better item — deepread still does top_k (a quality SWAP, NOT a saving; opus
-        # is only saved at the boundary when eligible < top_k). borderline (conf=low) stays.
-        # FILTERS the deepread pool only — does NOT touch ctx.items, so synthesize keeps B's
-        # order + [N] (the skipped item still shows in the brief, annotated 可跳过, no 详解).
-        eligible = [it for it in ctx.items if not high_conf_skip(ctx, it)]
-        critic_skipped = len(ctx.items) - len(eligible)
+        # V5: critic verdicts are annotation-only (the brief/reading page keeps the honest
+        # ⚠️可跳过 label) — they no longer gate deepread. 每一篇都要详解 (user decision).
+        eligible = list(ctx.items)
 
         # checkpoint: a crashed/re-run deepread reuses already-done items (same id + same
         # prompt). Refining deepread.md changes prompt_fp → everything re-runs with the new
@@ -177,6 +185,7 @@ class DeepReadStage(Stage):
             order = {it.id: i for i, it in enumerate(eligible)}
             top.sort(key=lambda it: order[it.id])
         selected_ids = {it.id for it in top}
+        thin_ids = {it.id for it in thin}
         thin_skipped = [it for it in thin if it.id not in selected_ids]
         if thin_skipped:
             ctx.stats["deepread.thin_skipped"] = [it.id for it in thin_skipped]
@@ -199,10 +208,15 @@ class DeepReadStage(Stage):
             else:
                 grounding = smart_grounding(basis)   # the exact source text the LLM sees
                 _write_source_sidecar(ctx, it, grounding)
-                user = (f"标题: {it.title}\n来源: {it.source_name}\n链接: {it.url}\n\n"
+                # thin grounding → deterministic honest-brevity trigger (the prompt's
+                # 「源材料薄」 mode must not depend on the model noticing thinness itself)
+                note = _THIN_NOTE if it.id in thin_ids else ""
+                user = (f"{note}标题: {it.title}\n来源: {it.source_name}\n链接: {it.url}\n\n"
                         f"原文:\n{grounding}")
-                res = ctx.llm.complete(user, system=system,
-                                       model=ctx.config.models.deepread, timeout=360, tag=self.name)
+                t0 = time.monotonic()
+                res = ctx.llm.complete(user, system=system, model=ctx.config.models.deepread,
+                                       timeout=LLM_TIMEOUT, tag=self.name)
+                ms = round((time.monotonic() - t0) * 1000, 1)
                 if res.ok and res.text.strip():
                     it.explain_zh = res.text.strip()
                     ctx.bump("deepread.ok")
@@ -210,6 +224,13 @@ class DeepReadStage(Stage):
                     it.explain_zh = NO_TEXT
                     ctx.bump("deepread.failed")
                     ctx.log.warn("deepread llm failed", url=it.url, error=(res.error or "")[:120])
+                if ctx.trace is not None:     # per-item 额度/时长遥测 (V5 长产出要盯真实耗时)
+                    try:
+                        ctx.trace.event("deepread_item", id=it.id, ms=ms, ok=res.ok,
+                                        grounding_chars=len(grounding),
+                                        out_chars=len(res.text or ""), thin=it.id in thin_ids)
+                    except Exception:  # noqa: BLE001 — tracing must never break deepread
+                        pass
             with ckpt_lock:                               # checkpoint after each item (crash-resume)
                 ckpt["items"][it.id] = {"explain_zh": it.explain_zh, "full_text": it.full_text}
                 try:
@@ -228,5 +249,5 @@ class DeepReadStage(Stage):
         ctx.log.info("deepread", attempted=len(top), ok=ctx.stats.get("deepread.ok", 0),
                      resumed=ctx.stats.get("deepread.resumed", 0),
                      no_text=ctx.stats.get("deepread.no_text", 0),
-                     failed=ctx.stats.get("deepread.failed", 0), critic_skipped=critic_skipped,
-                     thin_skipped=len(thin_skipped))
+                     failed=ctx.stats.get("deepread.failed", 0),
+                     thin=len(thin_ids), thin_skipped=len(thin_skipped))
