@@ -30,6 +30,7 @@ from ..core.io import atomic_write_text
 from ..core.models import Digest, RunContext
 from ..core.ports import Channel
 from ..core.registry import register
+from ._mermaid import mermaid_to_svg
 from ._web_render import render_day_page
 
 _DEPLOY_TIMEOUT = 300   # first npx run fetches wrangler; generous ceiling
@@ -89,7 +90,7 @@ class WebReaderChannel(Channel):
         r = cfg.resolved()                                  # non-secret ids only (no token, no web secret)
 
         try:
-            html = render_day_page(digest.markdown, date=digest.date)
+            html = render_day_page(digest.markdown, date=digest.date, mermaid_svg=mermaid_to_svg)
             atomic_write_text(Paths.web / "site" / seg / "index.html", html)
         except Exception as e:  # noqa: BLE001
             ctx.log.warn("web_reader render/write failed", error=repr(e)[:160])

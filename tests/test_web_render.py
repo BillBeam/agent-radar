@@ -80,3 +80,109 @@ def test_critic_quote_and_html_escape():
 def test_hr_and_blank_skipped():
     h = render_day_page("# H\n\n---\n正文", date="d")
     assert "<h1>H</h1>" in h and "<p>正文</p>" in h and "---" not in h
+
+
+# ---- V5 constructs: tables / fences / mermaid / section heads / backtop / read-stats ----
+V5_SAMPLE = """# Agent Radar · 2026-07-05
+## 🆕 今日新增
+### [1] [Paper A](https://arxiv.org/abs/1)
+**🎯 一句话核心洞察**
+洞察正文。
+**🔧 核心机制完整拆解**
+**机制一：采样器**
+机制正文，长度凑一点，这样时长估计不为零。
+
+```mermaid
+flowchart LR
+  A["输入"] --> B["输出"]
+```
+
+图：这张图看数据流向。
+
+**🧪 实验与证据（完整）**
+| 方法 | 得分 | 提升 |
+|---|---|---|
+| 基线 | 61.2 | - |
+| 本文 | 74.5 | +13.3 |
+
+表里的每个数字都被解释。
+
+```python
+print("hi <b>")
+```
+
+### [2] [Paper B](https://arxiv.org/abs/2)
+第二篇正文。
+"""
+
+
+def test_table_renders_scrollable_with_zebra_semantics():
+    h = render_day_page(V5_SAMPLE, date="2026-07-05")
+    assert '<div class="tbl"><table>' in h
+    assert "<th>方法</th><th>得分</th><th>提升</th>" in h
+    assert "<td>74.5</td>" in h and "<td>+13.3</td>" in h
+    assert "|---|" not in h                                   # separator row consumed
+
+
+def test_malformed_table_row_padded_to_header():
+    h = render_day_page("| a | b |\n|---|---|\n| only |\n", date="d")
+    assert h.count("<td>") == 2 and "<td>only</td>" in h      # short row padded, page intact
+
+
+def test_fence_code_block_escaped():
+    h = render_day_page(V5_SAMPLE, date="2026-07-05")
+    assert '<pre class="code"><code>print(&quot;hi &lt;b&gt;&quot;)</code></pre>' in h
+
+
+def test_mermaid_without_renderer_degrades_to_code():
+    h = render_day_page(V5_SAMPLE, date="2026-07-05")         # no mermaid_svg injected
+    assert 'flowchart LR' in h and '<figure class="diagram">' not in h
+
+
+def test_mermaid_renderer_injected_and_failure_isolated():
+    ok = render_day_page(V5_SAMPLE, date="d", mermaid_svg=lambda code: "<svg id='x'>ok</svg>")
+    assert '<figure class="diagram"><svg id=\'x\'>ok</svg></figure>' in ok
+
+    def boom(code):
+        raise RuntimeError("bad diagram")
+    degraded = render_day_page(V5_SAMPLE, date="d", mermaid_svg=boom)
+    assert '<figure class="diagram">' not in degraded         # exception → code block, page fine
+    assert "flowchart LR" in degraded and "<h1>" in degraded
+
+
+def test_section_heads_promoted_subheads_not():
+    h = render_day_page(V5_SAMPLE, date="2026-07-05")
+    assert '<p class="axis sect">🎯 一句话核心洞察</p>' in h
+    assert '<p class="axis sect">🧪 实验与证据（完整）</p>' in h
+    assert '<p class="axis">机制一：采样器</p>' in h            # sub-head stays plain axis
+
+
+def test_caption_paragraph_styled():
+    h = render_day_page(V5_SAMPLE, date="2026-07-05")
+    assert '<p class="caption">图：这张图看数据流向。</p>' in h
+
+
+def test_backtop_after_each_item_and_toc_read_stats():
+    h = render_day_page(V5_SAMPLE, date="2026-07-05")
+    assert h.count("↑ 返回目录") == 2                          # one per item
+    assert '<nav class="toc" id="toc"' in h                   # backtop target exists
+    assert 'class="mins"' in h and "分钟" in h                 # per-item read-time estimate
+
+
+def test_real_mmdc_renders_chinese_flowchart(tmp_path, monkeypatch):
+    """Integration smoke: the actual chosen path (mmdc → SVG). Skips if npx unavailable."""
+    import shutil as _sh
+
+    import pytest
+    from radar.core.config import Paths
+    monkeypatch.setattr(Paths, "web", tmp_path / "web")       # isolate the svg cache
+    if not _sh.which("npx"):
+        pytest.skip("npx not on PATH")
+    from radar.channels._mermaid import mermaid_to_svg
+    svg = mermaid_to_svg('flowchart LR\n  A["输入"] --> B["判断"]')
+    if svg is None:
+        pytest.skip("mmdc unavailable in this environment (degrade path covered elsewhere)")
+    assert svg.startswith("<svg") and "输入" in svg
+    assert 'id="mmd-' in svg                                  # per-diagram scoped id
+    svg2 = mermaid_to_svg('flowchart LR\n  A["输入"] --> B["判断"]')
+    assert svg2 == svg                                        # content-hash cache hit
