@@ -5,12 +5,20 @@ params:
   url_contains: "/engineering"   # keep only links whose href contains this
   limit: 25
   min_text_len: 18               # skip nav/short anchors
+  enrich_summary: true           # fill empty summaries from each page's og:description (cached)
 Dates: index cards often print the publish date inside the link (Anthropic renders
 '<h3>Title</h3><div>Apr 23, 2026</div>') — we parse it so genuinely-new posts enter as
 🆕今日新增 with a real date and old posts are honestly 📚首次收录 (7.3 复盘: everything
 was undated → labeled 无日期 backfill). Cards without a date keep published_at=None →
 bounded back-catalog handling as before. No window filter here either way: the whole
 point of this source is collecting the not-yet-seen back-catalog (fetch bounds it).
+
+Summary enrichment (B3b, 2026-07-06): index cards carry NO blurb, so items reached triage
+as bare titles — "Introducing Claude Tag" (a major Slack-agent capability launch) sat in the
+pool 5 runs unscoreable because neither model nor human can tell majorness from that title.
+For sources opting in, empty summaries are filled from the target page's og:description /
+meta description, cached on disk (url → text, negative results too) so the steady-state cost
+is zero extra requests; per-run fetches are capped and any failure leaves summary empty.
 """
 from __future__ import annotations
 
@@ -20,10 +28,20 @@ from html.parser import HTMLParser
 from typing import Optional
 from urllib.parse import urljoin
 
+from ..core.config import Paths
+from ..core.io import atomic_write_json, read_json
 from ..core.models import Item, Source, TimeWindow
 from ..core.registry import register
 from ..core.text import smart_truncate, strip_trailing_date
 from ._base import BaseSource
+
+_MAX_ENRICH_FETCHES = 12   # per source per run — first run backfills over a few days
+_DESC_RE = (
+    re.compile(r'<meta[^>]+(?:property|name)=["\'](?:og:description|description)["\'][^>]*'
+               r'content=["\']([^"\']+)["\']', re.I),
+    re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*'
+               r'(?:property|name)=["\'](?:og:description|description)["\']', re.I),
+)
 
 _TITLE_PREFIXES = ("Featured ", "New ", "Announcement ", "Read more ")
 _MONTHS = {m: i + 1 for i, m in enumerate(
@@ -106,6 +124,15 @@ class _LinkExtractor(HTMLParser):
             self._in_heading = 0
 
 
+def extract_description(page_html: str) -> str:
+    """og:description / meta description from a page (attribute order varies)."""
+    for pat in _DESC_RE:
+        m = pat.search(page_html)
+        if m:
+            return " ".join(m.group(1).split())[:500]
+    return ""
+
+
 @register("source", "html")
 class HtmlSource(BaseSource):
     def fetch(self, source: Source, window: TimeWindow) -> list[Item]:
@@ -130,4 +157,37 @@ class HtmlSource(BaseSource):
                                      published_at=_published(anchor)))
             if len(items) >= limit:
                 break
+        if source.params.get("enrich_summary"):
+            self._enrich_summaries(items)
         return items
+
+    def _enrich_summaries(self, items: list[Item]) -> None:
+        """Fill empty summaries from each page's meta description. Disk-cached (negative
+        results too) → steady state fetches nothing; capped per run; never raises."""
+        try:
+            cache: dict[str, str] = read_json(Paths.html_summary_cache, {}) or {}
+        except Exception:  # noqa: BLE001
+            cache = {}
+        fetched = 0
+        dirty = False
+        for it in items:
+            if it.summary:
+                continue
+            if it.url in cache:
+                it.summary = cache[it.url]
+                continue
+            if fetched >= _MAX_ENRICH_FETCHES:
+                continue
+            fetched += 1
+            try:
+                desc = extract_description(self.get_text(it.url, timeout=15, retries=1))
+            except Exception:  # noqa: BLE001 — enrichment is best-effort, item stays bare
+                continue  # not cached → retried next run
+            cache[it.url] = desc  # "" too: a page with no description shouldn't be re-fetched daily
+            it.summary = desc
+            dirty = True
+        if dirty:
+            try:
+                atomic_write_json(Paths.html_summary_cache, cache)
+            except Exception:  # noqa: BLE001
+                pass

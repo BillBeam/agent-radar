@@ -1,0 +1,29 @@
+{
+  "_comment": "PART D 回归样本（2026-07-06 时效性收口）。patch_release = 用户点名的真实案例，取自 data/candidates/2026-07-05.json 原记录；major_release_counterfactual = 构造的 Opus 级重大发布反事实（id 带 SYNTHETIC 标记，绝不混入真实数据）；nightly = 真实 gemini-cli nightly 标题。期望分数带（expected_max/expected_min）由 scripts/prove_triage_exemption.py 重放验证，pytest 里默认只做 rubric 措辞断言，设 RADAR_LLM_TESTS=1 才真调 haiku 验分数带。",
+  "patch_release": {
+    "source_name": "Claude Code (releases)",
+    "category": "harness",
+    "title": "v2.1.201",
+    "url": "https://github.com/anthropics/claude-code/releases/tag/v2.1.201",
+    "published_at": "2026-07-03T23:50:35Z",
+    "summary": "What's changed Claude Sonnet 5 sessions no longer use the mid-conversation system role for harness reminders",
+    "expected_max_score": 4
+  },
+  "major_release_counterfactual": {
+    "id": "SYNTHETIC-opus46-counterfactual",
+    "source_name": "Anthropic News",
+    "category": "labs",
+    "title": "Introducing Claude Opus 4.6",
+    "url": "https://www.anthropic.com/news/SYNTHETIC-claude-opus-4-6",
+    "summary": "Anthropic today announced Claude Opus 4.6, its next-generation flagship model: a new agentic planning mode, 3x faster tool use, and state-of-the-art results on SWE-bench Verified and OSWorld. Available today in the API, Claude Code and claude.ai.",
+    "expected_min_score": 8
+  },
+  "nightly_release": {
+    "source_name": "Gemini CLI (releases)",
+    "category": "harness",
+    "title": "Release v0.51.0-nightly.20260706.gf7af4e518",
+    "url": "https://github.com/google-gemini/gemini-cli/releases/tag/v0.51.0-nightly.20260706",
+    "summary": "Nightly build",
+    "expected_max_score": 2
+  }
+}

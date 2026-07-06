@@ -646,3 +646,124 @@ WATCHLIST 候选：薄源上图更易越「只画原文结构」线（[4] 剩余
 **顺手排除一个假警报**：07-06 daily「耗时 8380s」实为机器睡眠（fetch monotonic 仅 205s，
 墙钟跨 2h18m=合盖），selected=0 是周一早池小（候选 29 全低于阈值/已读）非故障；若 08:30
 常合盖可考虑 pmset 定时唤醒，留他拍板。
+
+# 时效性与爆点捕捉全链路收口（2026-07-06）—— 三洞齐修 + 逐源真值表 + 端到端追踪
+
+**为什么**：用户把时效性立为硬要求（「07-06 跑的绝不能漏 07-05→06 的 agent/harness/Claude/OpenAI
+爆点」，点名案例「最近的 claude tag」）。web Claude 审计实锤三洞：① arXiv cap=50 打满截尾；
+② 停机超窗 = feed 上游窗滤后永久漏；③ 重大发布被 triage rubric 压死（model-release PR ≤5-6）。
+本轮先查真相再动手（探针全实测），修三洞 + 把保证边界写成文档。
+
+## 先查出的真相（比审计估计更严重，全部实测）
+
+- **arXiv 截尾远超估计**：拿 n=200 重建 07-03 跑的 96h 窗 → 窗内匹配 **>200 条**（200 条探针
+  自身都打满、最老只回到 06-30），旧 cap=50 当天截掉 **150+ 而非「第 51 条起」**；7 跑里 5 跑
+  顶格 50（06-20/21/26/30、07-03 池计数重建）。周末枯水期窗内仅 ~40 → 截尾集中在工作日。
+- **GitHub releases.atom 服务端硬编码只给 10 条**——我们的 limit=15 形同虚设。折天数：
+  claude-code 10 条=9.3 天（尚可）；**cline 10 条=9 小时**（sdk/* 碎 tag 洪泛）——atom 路径连
+  两次日跑之间的 24h 都保证不了。
+- **洞③有真实受害者，不是假设**：`Introducing Claude Tag` 连续 **5 跑**在候选池（06-26 起）、
+  `Introducing Claude Sonnet 5` 连续 **3 跑**（07-03 起）、`Redeploying Fable 5`/`Claude
+  Science` 同样——**全部从未投递**（seen.json/所有 items.json 零命中）。用户问的「最近的
+  claude tag」十有八九指 Claude Tag 产品发布——它一直在池里、一直被分数压死。这也证明
+  seen-based 捕捉在按设计工作（没上桌就每天回池），死的是分数端。
+- **07-06 早 arXiv 三连 read-timeout（30s）**：单源故障的真实样本，B2 的 per-source 补课
+  正好治它（当天 96h leash 本身也兜住了）。
+- 顺手发现：langchain-changelog 探针返回 0 条（记入 SOURCE_GUARANTEES，validate 跟踪）。
+
+## 修了什么（B1/B1b/B2/B3 + 一个下游帽）
+
+1. **B1 arXiv 分页防截尾**（`radar/sources/arxiv.py` + `sources.yaml`）：单请求 cap=50 →
+   **窗口感知分页**（页 200、页间 3s 礼貌延迟、某页最老条目越过窗口边界即早停、跨页硬顶 600、
+   超时 30→60s）。**keywords/categories 一个字未动**（A1 收紧零回退——提网眼内容量≠放大网眼）。
+   为什么 600 不是任务书说的 150-200：探针证明 200 都会在工作日 96h 窗打满；600 = 实测工作日
+   峰值(~250) × B2 十四天补课余量，早停保证平日仍只发 1 个请求（真跑实测 1 页、40 条、不饱和）。
+2. **B1b GitHub REST 优先**（`radar/sources/github_releases.py`）：REST `/releases?per_page=30`
+   优先（无鉴权 60 req/h，我们 10 源/天用不到零头）、atom 兜底（限流/故障照活）。真跑 claude-code
+   REST 深度 30 条=29.1 天（atom 10 条=9.3 天）。残余诚实边界：atom 兜底期间高频仓可能漏碎 tag。
+3. **B2 停机补课窗**（`radar/stages/fetch.py` + `config.py`）：`data/state/fetch_state.json`
+   持久化 **per-source** 上次成功 fetch 时间戳；有效窗口 = max(配置窗, gap+12h 余量)、14 天封顶；
+   失败源不刷戳 → 下跑自动为它放大。**比任务书的单一全局时间戳强一档**：今天 arXiv 单源超时
+   这种局部故障也补，不只整机停机。真跑双臂验证：正常连跑（gap 24h）**零膨胀**、模拟 3 天停机
+   全 48h 源放大到 84h 并**捞回 v2.1.201 本尊（58.8h 老、已出配置窗）**+ 周末 simonwillison/
+   latent-space/deepmind/claude-code v2.1.199-201 等；96h leash 源（arxiv/hf）84h<96h 零误伤。
+   已播种真实 fetch_state.json（27 源=今晨成功时刻；arxiv-agents=07-05 它上次成功，诚实）。
+4. **B3 重大发布豁免**（`prompts/triage.md`）：豁免（核心厂商新模型家族/旗舰代际/重大能力/
+   协议·标准变更 → 8-10 即使细节薄）+ 单向护栏（补丁 vX.Y.Z/nightly/alpha·beta/依赖升级/例行
+   release notes → 照旧 0-4，不因核心厂商抬分）+ 保/压例句（Opus 4.6→8+、MCP 规范新版→8+；
+   v2.1.201→≤4、nightly→≤2）。措辞复刻 rerank.md benchmark 豁免的成熟模式（豁免+括号分寸注+
+   例句对）。5-6 档同步改「notable **(non-major)** model release」消除自相矛盾。
+   **B3b 证据端补齐（第一轮重放逼出来的）**：第一轮重放豁免对**带摘要的**构造反事实完美咬合
+   （Opus 4.6 旧 [5,5]→新 [9,9,9]）、护栏完美（v2.1.201 [5,5]→[2,1,2]、nightly/sdk 纹丝不动、
+   论文 Δ中位 0.0），**但真实受害者没救回来**：Introducing Claude Sonnet 5 新 rubric 下 [4,8,1]
+   大方差、Claude Tag [1,2,1] 纹丝不动。根因不是豁免措辞——是 **html 源卡片无 blurb、这些条目
+   summary 为空**，haiku 只有光杆标题可判（Claude Tag 查实 = Slack 内 @Claude 委派任务的团队级
+   agent 能力发布、Anthropic 自称内部 65% 产品代码经它产出——正中用户靶心的重大能力，但标题上
+   人类也判不出）。修两头：① `prompts/triage.md` 光杆标题规则（标题自明的新模型代际→照豁免；
+   陌生产品名→**不许靠品牌猜高分**，按给定证据判——保持单向）；② `radar/sources/html.py`
+   **enrich_summary**（opt-in，anthropic-news/engineering 开启）：空 summary 用文章页
+   og:description 补，磁盘缓存（`data/state/html_summaries.json`，空结果不缓存以便重试）、
+   每跑封顶 12 次抓取、失败留空绝不编——稳态零额外请求。
+   **B3c 新一方产品地板（第二轮重放逼出）**：证据补齐后 Sonnet 5 修稳 [8,9,8]，但 Claude Tag
+   仍 [2,1,1]——查实其 og:description 是纯营销空话（"a new way for teams to work with
+   Claude"，零技术信号），haiku 在该证据下压低**是 rubric 的正确行为**（不许靠品牌猜）。问题
+   变成：厂商简介空话时，「新命名一方产品存在」本身就是 agent 工程师的当天必知信号。修 =
+   豁免加中间档：**核心厂商 Introducing 的新命名一方产品/agent 界面 → 地板 6-7**（够过质量门
+   上桌，一行 digest 由他自己决定点不点），护栏三连：地区可用性/上架某云/定价套餐/办公室/合作
+   宣传照旧 0-4；地板不抬 8+（8-10 仍只属于模型代际/重大能力/协议变更）；例句保 Claude Tag→6-7、
+   压 Seoul office→0-1。
+5. **triage_pool_cap 200→400**（`config.py`）：B1 后工作日池可到 ~300，旧 200 的 recency 裁剪
+   会静默把 B1 在下游抵消掉（被裁的老论文次日即出窗=永久没被打过分）。风险注记：单次 haiku 批
+   到 ~350 条时输出 ~55K token，接近上限；已有 salvage+覆盖率兜底护栏，若真跑出现覆盖率告警，
+   下一步是 triage 分块（本轮不做）。
+6. **可观测**：fetch 日志行加 per_source 计数（本轮审计只能靠池文件重建饱和史的教训）+
+   catch-up 放大时单独 log + `ctx.stats["catchup"]`。
+
+## B3 重放验证（同池同序，旧 rubric×2 / 新 rubric×3，haiku）
+
+三轮迭代收敛（每轮同池同序 36 条=gh releases 17 + labs 9 + 论文样本 10 + 构造反事实 1；haiku）：
+
+- **v1（只有豁免+护栏）**：合成 Opus 4.6 [5,5]→**[9,9,9]** 完美、v2.1.201 [5,5]→[2,1,2] 完美、
+  nightly/sdk 纹丝不动、论文 Δ中位 0.0——**但真实 Sonnet 5 [4,8,1] 大方差、Claude Tag [1,2,1] 不动**
+  → 暴露证据缺口（html 光杆标题）→ 加 B3b enrichment + 光杆标题规则。
+- **v2（+B3b）**：Sonnet 5 修稳 **[8,9,8]**；Claude Tag 仍 [2,1,1]——og:description 查实是纯营销
+  空话，haiku 压低是正确行为 → 加 B3c 新一方产品地板。
+- **v3（+B3c，终版 rubric）**：**五项全 PASS**——
+
+| 类别 | 条目 | 旧 rubric（v2 基线） | 终版 rubric |
+|---|---|---|---|
+| 重大 | Introducing Claude Sonnet 5（真实） | [4.0, 2.0] | **[8, 9, 9]** |
+| 重大 | Introducing Claude Opus 4.6（构造） | [5.0, 3.0] | **[9, 9, 9]** |
+| 新产品地板 | Introducing Claude Tag（真实受害者） | [0.0, 1.0] | **[6, 7, 6]**（过 6 分质量门=能上桌） |
+| 补丁 | v2.1.201（用户点名） | [3.0, 5.0] | [2, 3, 2] |
+| 补丁 | v2.1.200 | [2.0, 2.0] | [2, 3, 2] |
+| 碎 tag | sdk/* ×9 · nightly ×2 · alpha ×1 | 全 0–1 | 全 0–1（纹丝不动） |
+| 观察 | CLI v3.0.37（cline minor） | [5.0, 6.0] | [5, 5, 5]（合理中档） |
+| 观察 | Redeploying Fable 5（ops 通告） | [0.0, 0.0] | [1, 1, 2]（正确不抬） |
+| 论文×10 | —— | —— | Δ中位 0.0（变化只来自豁免条款） |
+
+漏斗推演（07-05 当天数据）：Sonnet 5 得 8-9 → gate 排序键 ~8.4-9.4 稳进 24 finalist；Claude Tag
+6-7 → 键 6.4-7.4，当天 cap 边界在 ~6.0-6.5（31 项抢 24 席）→ 也进 finalist；之后 rerank（未动）
+按工程价值/对他新排 top-10。四条重大发布至今仍在池中——**下一个真跑就是自然验收**。
+证据 JSON：`data/real-llm-runs/local/triage-exemption-replay-2026-07-05*.json`（gitignored）。
+
+## PART D：v2.1.201 端到端 trace（可复述版）
+
+发布 2026-07-03T23:50:35Z（北京 07-04 07:50）→ 07-03 跑（21:57）在发布**前**、07-04 无跑
+（launchd 07-05 才装）→ **07-05 两跑均进池 ✓**（97 候选之一，triage 全池覆盖=必被打分；当天
+quality gate 97→24、below_threshold=66、cap 再砍 7），未进 finalist/top-10 → 未投递 → 07-06
+跑时 48.9h 龄**恰好滑出 48h 窗**（差 52 分钟）。结论：**覆盖 ✓、被当例行补丁压低=分寸正常**
+（其 summary「Sonnet 5 会话不再用 mid-conversation system role 发 harness 提醒」有轻度 harness
+相关性，旧 rubric 下 4-6 边缘属合理）；新 rubric 下重放稳定 ≤4=护栏工作。反事实：假如 07-05
+两跑那天停机，B2 补课窗已实测能在 07-06+ 把它捞回。而**真正的洞是 Claude Tag/Sonnet 5**（见上）
+——B3 修的就是它们；四条重大发布今天仍在池里，明早首个真跑就是 B3 的自然验收。
+
+## 不做/边界（有意）
+
+- rerank 的 B/C 逻辑零改动；deepread/synthesize/deliver/models.py 零改动。
+- PART C 增补只提 1 个（MCP 规范仓库 releases，github_releases 适配器零代码、8 个 release 全是
+  规范版本、2026-07-28 新版 RC 已挂）待用户拍板；查过不建议：OpenAI platform changelog 与
+  Anthropic docs release-notes（重 JS 页、html 适配器形态不合、与 openai-news/gh-claude-code
+  冗余）、blog.google 两 feed（活着但月度汇总+PR 稿多，Gemini 旗舰已有 deepmind-blog+HN+
+  gemini-cli 三重冗余）。X/Twitter 维持有意不覆盖。
+- hf_papers 服务端 ~50 条深度不修：arXiv id 跨源去重使其本质是 arxiv 的策展视图，补课走 arxiv。

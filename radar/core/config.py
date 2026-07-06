@@ -39,6 +39,8 @@ class Paths:
     blocklist_yaml = CONFIG_DIR / "blocklist.yaml"
     seen_json = DATA_DIR / "state" / "seen.json"
     first_seen_json = DATA_DIR / "state" / "first_seen.json"
+    fetch_state_json = DATA_DIR / "state" / "fetch_state.json"   # per-source last successful fetch (B2 catch-up)
+    html_summary_cache = DATA_DIR / "state" / "html_summaries.json"  # url → og:description (html source enrichment)
     deepread_ckpt = DATA_DIR / "state" / "deepread"    # per-item deepread checkpoint dir (crash-resume)
     memory_db = DATA_DIR / "memory.db"
     user_md = ROOT / "USER.md"          # personal profile (gitignored; only USER.example.md is committed)
@@ -141,11 +143,21 @@ class RadarConfig(BaseModel):
     freshness_hours: float = 48.0          # daily: dedup makes a generous window safe
     weekly_freshness_hours: float = 192.0
     relevance_threshold: float = 6.0
-    triage_pool_cap: int = 200         # safety ceiling on candidates sent to triage (recency-trimmed if exceeded)
+    # Safety ceiling on candidates sent to triage (recency-trimmed if exceeded). 400, not 200:
+    # after B1 un-truncated arXiv, a weekday pool can top 250 — a 200 trim would silently undo
+    # B1 downstream (items evicted here can age out of the window before ever being scored).
+    triage_pool_cap: int = 400
     finalist_pool: int = 24            # how many survivors go to the rerank stage
     max_per_source: int = 3            # diversity: max items from one source in the final selection
     max_undated_per_source: int = 8    # bounded history: cap dateless (back-catalog) items per source
     deepread_top_k: int = 10           # V5: 每天全部条目都深读（=daily_max_items），不再只挑 6 篇
+
+    # --- catch-up window (B2): downtime must not become a permanent miss ---
+    # A run's effective per-source window = max(configured, hours since that source's last
+    # SUCCESSFUL fetch + margin), capped. Feed adapters window-filter upstream, so without
+    # this a 3-day outage silently drops every dated item older than the configured window.
+    catchup_margin_hours: float = 12.0   # headroom for publish/announce lag + clock skew
+    catchup_max_hours: float = 336.0     # 14d ceiling — a long-dormant machine can't pull whole archives
 
     token_budget_per_run: int = 200_000
     # --- proxy (first-class; many sources are Western and need a proxy from CN) ---

@@ -84,16 +84,18 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 
 ### 6.1 源（`radar/sources/`）— ✅ 已实现
 6 类适配器，28 源验活全过：
-- `rss`(RSS/Atom) · `arxiv`(官方 export API，类目+关键词+时间排序) · `hackernews`(Algolia API，points 门槛) · `github_releases`(`releases.atom`) · `hf_papers`(HF Daily Papers) · `html`(无 feed 的博客，stdlib 链接抽取)。
+- `rss`(RSS/Atom) · `arxiv`(官方 export API，类目+关键词+时间排序，**窗口感知分页**：页 200、越过窗口边界早停、跨页硬顶 600——旧单请求 cap=50 曾 5/7 跑顶格、96h 窗实测匹配 >200 条即静默截尾 150+，2026-07-06 修) · `hackernews`(Algolia API，points 门槛) · `github_releases`(**REST API per_page=30 优先、`releases.atom` 兜底**——atom 服务端只给 10 条，高频仓如 cline 实测 10 条仅跨 9 小时) · `hf_papers`(HF Daily Papers) · `html`(无 feed 的博客，stdlib 链接抽取；**空摘要用文章页 og:description 补齐**——磁盘缓存、opt-in、稳态零额外请求，否则光杆标题进 triage 判不了轻重)。
+- **逐源「不漏」真值表**（窗口×深度×饱和史×停机行为×保证等级，全实测）：`docs/SOURCE_GUARANTEES.md`。
 - 源注册表在 `config/sources.yaml`（分类、带权重、可读——单独当 reading list 都值）。
 - HTTP 基类 `_base.py`：超时 + 退避重试 + **主动忽略环境 `HTTP_PROXY`**（该环境的代理是不可达的公司代理）。
 - `python -m radar --mode validate` 逐个验活。
 
 ### 6.2 Fetch stage（`radar/stages/fetch.py`）— ✅
 并行抓取，**每源 circuit-break**（一个死源不拖累整跑），归一化 → 去重(vs `seen.json`) → 原子落盘 `data/candidates/{date}.json`（LLM 失败可事后补跑）。
+**停机补课窗（B2，2026-07-06）**：`data/state/fetch_state.json` 持久化每源上次成功 fetch 时间戳；有效窗口 = max(配置窗, 距该源上次成功 + 12h 余量)、14 天封顶——整机停机或单源连挂（如 07-06 早 arXiv 三连超时）都不再永久漏；正常连跑窗口零膨胀（实测）。
 
 ### 6.3 Triage stage（`radar/stages/triage.py`）— ✅
-一次批量 `claude -p`(haiku) 给候选池 pointwise 0–10 打分 + 打标签 + 判自相关。rubric 在 `prompts/triage.md`（harness/工程深度 > 论文 > 模型发布 PR > 融资/口水）。只传 title+source+summary 省 token。LLM 失败降级为权重启发式。
+一次批量 `claude -p`(haiku) 给候选池 pointwise 0–10 打分 + 打标签 + 判自相关。rubric 在 `prompts/triage.md`（harness/工程深度 > 论文 > 模型发布 PR > 融资/口水，**外加重大前沿发布豁免**（2026-07-06）：核心厂商新模型家族/旗舰代际/重大能力/协议变更即使细节薄 → 8–10；**新一方命名产品地板** ≥6–7（简介是营销空话也上桌）；单向护栏保补丁·nightly·例行 release notes·地区可用性 照旧 0–4——修前 Introducing Claude Sonnet 5 / Claude Tag 曾连续 3–5 跑进池而从未上桌）。只传 title+source+summary 省 token。LLM 失败降级为权重启发式。
 
 ### 6.4 Quality gate（`radar/stages/quality_gate.py` + `radar/quality/rules.py`）— ✅
 可组合规则按序跑：`noise_blocklist`(配 `config/blocklist.yaml`) → `threshold`(<6 丢) → `cap`(按 score+0.4×weight 排序，封顶 max_items)。产出把关漏斗 stats。

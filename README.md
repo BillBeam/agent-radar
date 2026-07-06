@@ -32,6 +32,7 @@ Agent Radar 把这件事自动化并做到极致：
 | 🧩 **可拓展架构** | ports-and-adapters 六边形：加一个源/渠道/规则 = 加一个文件或一行配置，不动核心 |
 | 💰 **零额外计费** | LLM 走 `claude -p` headless + 你的订阅；记忆走本地 SQLite FTS5（无嵌入/向量库）；不调付费 API |
 | 🛡️ **生产级健壮** | 每源熔断、每段降级、原子写、结构化日志 + 全链路 trace、单测 + eval 回归 |
+| ⏱️ **时效性有保证书** | 窗口内不截尾（arXiv 分页早停）、停机不永久漏（per-source 补课窗，14 天封顶）、重大发布当天浮上来（triage 豁免+护栏）；保证与边界白纸黑字：[docs/SOURCE_GUARANTEES.md](docs/SOURCE_GUARANTEES.md) |
 | 🔁 **自我进化**（E1 已上线） | 每周日自动盘点 eval/投票/源分布 → 草案建议推钉钉，**零自动应用、用户拍板**；对话式改配置与代码级闭环（E2）规划中 |
 
 ---
@@ -104,6 +105,8 @@ launchctl list | grep agentradar            # 确认在跑；日志见 data/stat
 ```
 
 > ⚠️ **TCC 前提**：仓库**不能**放在 `~/Desktop`、`~/Documents`、`~/Downloads` 等 macOS 隐私保护目录——launchd 干净上下文里的 `/bin/bash` 读不了这些路径，agent 会 `Operation not permitted` + 126 循环（本仓库因此迁到 `~/agent-radar`）。放家目录普通路径即可，无需给 bash 完全磁盘访问。
+
+> ⏱️ **时效性语义（诚实边界）**：每日 08:30 单跑 → 任何爆点的送达延迟 ≤ 下一个 08:30（~24h 上限），**不是实时告警产品**。Mac 合盖睡眠 = 醒来补跑一次；关机 = 当次跳过。停机/单源故障期间错过的内容由 **per-source 补课窗**自动捞回（有效窗口 = 距该源上次成功抓取 + 12h 余量，14 天封顶）——关 3 天，重开首跑窗口自动放大到 ~3 天+。逐源深度与保证等级见 [docs/SOURCE_GUARANTEES.md](docs/SOURCE_GUARANTEES.md)。X/Twitter 有意不覆盖（用户自己刷）。
 
 完整说明（代理处理、改时间、cron 替代、卸载）见 **[deploy/README.md](deploy/README.md)**。
 

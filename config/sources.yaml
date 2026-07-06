@@ -23,7 +23,9 @@ sources:
     type: html
     url: https://www.anthropic.com/engineering
     weight: 1.5
-    params: {url_contains: "/engineering/", limit: 20}
+    # enrich_summary（B3b）：index 卡片无 blurb → 光杆标题进 triage 判不了轻重；
+    # 用页面 og:description 补 summary（磁盘缓存、稳态零额外请求）。
+    params: {url_contains: "/engineering/", limit: 20, enrich_summary: true}
   - id: gh-claude-code
     name: Claude Code (releases)
     category: harness
@@ -100,7 +102,9 @@ sources:
     type: html
     url: https://www.anthropic.com/news
     weight: 1.1
-    params: {url_contains: "/news/", limit: 20}
+    # enrich_summary（B3b）：Introducing Claude Tag/Sonnet 5 曾以光杆标题进池 3-5 跑、
+    # haiku 无证据可判轻重 → 重大发布豁免咬合不上。og:description 就是缺的证据。
+    params: {url_contains: "/news/", limit: 20, enrich_summary: true}
 
   # ===== C. 中国实验室 =====
   - id: qwen-blog
@@ -180,7 +184,10 @@ sources:
       # agent-safety/agent 论文几乎必交叉 cs.AI，agent/agentic 关键词兜底存活。
       categories: [cs.AI, cs.CL, cs.MA, cs.SE]
       keywords: [agent, agentic, multi-agent, tool use, function calling, MCP, retrieval, RAG, agent harness, planning, orchestration]
-      max_results: 50
+      # B1 (2026-07-06)：50 → 600。实测 07-03 的 96h 窗口内匹配 >200 条、旧 cap=50 当天静默
+      # 截掉 150+（7 跑里 5 跑正好顶格 50）。600 是跨页硬顶：适配器按窗口边界早停分页，
+      # 平日仍只发 1 个请求。这是提"网眼内的容量"，keywords/categories 一个字不动（A1 收紧保持）。
+      max_results: 600
       max_age_hours: 96   # arXiv announces with ~1-2d lag → wider leash
   - id: hf-daily-papers
     name: Hugging Face Daily Papers
