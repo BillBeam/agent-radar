@@ -273,6 +273,7 @@ def _wire_fetch(monkeypatch, tmp_path, adapter_cls, state: dict | None):
     src = Source(id="s1", name="S", category="labs", type=SourceType.rss, url="http://x")
     monkeypatch.setattr(F, "load_sources", lambda: [src])
     monkeypatch.setattr(F.registry, "get", lambda kind, name: adapter_cls)
+    monkeypatch.setattr(F, "SALVAGE_DELAY_S", 0.0)   # no settle wait in tests
     monkeypatch.setattr(F.Paths, "seen_json", tmp_path / "seen.json")
     monkeypatch.setattr(F.Paths, "first_seen_json", tmp_path / "first_seen.json")
     monkeypatch.setattr(F.Paths, "fetch_state_json", tmp_path / "fetch_state.json")
@@ -339,3 +340,51 @@ def test_fetch_stage_first_run_no_state_no_widening(monkeypatch, tmp_path):
     stage.run(ctx)
     assert seen_windows == [48.0] and "catchup" not in ctx.stats
     assert json.loads((tmp_path / "fetch_state.json").read_text())["last_success"]["s1"]
+
+
+# ---------- salvage re-pass (2026-07-07 postmortem: dark-wake killed 18/28 sources) ----------
+
+def test_fetch_salvage_recovers_source_that_died_at_the_wrong_moment(monkeypatch, tmp_path):
+    """第一轮失败（醒来瞬间代理没就绪）→ salvage 第二轮成功 → 当跑就有货，不用等明天补课。"""
+    calls = {"n": 0}
+
+    class FlakyAdapter:
+        def __init__(self, config=None, log=None): ...
+
+        def fetch(self, source, window):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("RemoteDisconnected — proxy tunnel not up yet")
+            return [Item.create(source=source, title="t", url="http://x/t",
+                                published_at=datetime.now(timezone.utc))]
+
+    ctx = _ctx()
+    stage, src = _wire_fetch(monkeypatch, tmp_path, FlakyAdapter, None)
+    stage.run(ctx)
+    assert calls["n"] == 2                                   # first pass + salvage
+    assert ctx.stats["per_source"]["s1"] == 1                # recovered, item kept
+    assert ctx.stats["salvaged_sources"] == ["s1"]
+    assert ctx.stats["fetch_health"]["failed"] == []         # health reflects post-salvage truth
+    assert len(ctx.candidates) == 1
+    state = json.loads((tmp_path / "fetch_state.json").read_text())
+    assert state["last_success"]["s1"]                       # success stamped by salvage pass
+
+
+def test_fetch_salvage_still_dead_source_stays_failed(monkeypatch, tmp_path):
+    """两轮都死 → 保持 -1、不写 last_success（B2 明天自动放大窗口），不虚报恢复。"""
+    calls = {"n": 0}
+
+    class DeadAdapter:
+        def __init__(self, config=None, log=None): ...
+
+        def fetch(self, source, window):
+            calls["n"] += 1
+            raise RuntimeError("still dead")
+
+    ctx = _ctx()
+    stage, src = _wire_fetch(monkeypatch, tmp_path, DeadAdapter, None)
+    stage.run(ctx)
+    assert calls["n"] == 2                                   # salvage did retry once
+    assert ctx.stats["per_source"]["s1"] == -1
+    assert "salvaged_sources" not in ctx.stats
+    assert ctx.stats["fetch_health"]["failed"] == ["s1"]

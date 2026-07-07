@@ -7,6 +7,7 @@ recovered / re-run offline.
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -20,6 +21,11 @@ from ..sources import load_sources
 from ._arxiv import arxiv_id_from_url
 
 _VER = re.compile(r"v\d+$")
+
+# Settle delay before the salvage re-pass over failed sources (tests monkeypatch to 0).
+# Long enough for a just-woken proxy/tunnel to finish handshaking, short enough to be
+# negligible against a multi-minute pipeline.
+SALVAGE_DELAY_S = 20.0
 
 
 def _parse_stamp(s: Optional[str]) -> Optional[datetime]:
@@ -93,7 +99,10 @@ class FetchStage(Stage):
         per_source: dict[str, int] = {}
         catchup: dict[str, float] = {}
 
-        for s in sources:
+        def _attempt(s: Source) -> bool:
+            """One fetch attempt for one source, merged into the shared pool. Returns
+            True when the adapter returned (0 items is still success); False on failure
+            (isolated — one dead feed never kills the run)."""
             try:
                 adapter = adapters.get(s.type.value)
                 if adapter is None:
@@ -110,7 +119,7 @@ class FetchStage(Stage):
                 ctx.log.warn("source failed", source=s.id, error=repr(e))
                 ctx.bump("source_errors")
                 per_source[s.id] = -1
-                continue  # last_success untouched → next run auto-widens this source's window
+                return False  # last_success untouched → next run auto-widens this source's window
 
             kept = 0
             backfill_kept = 0
@@ -131,6 +140,29 @@ class FetchStage(Stage):
                     pool[key] = it
                 kept += 1
             per_source[s.id] = kept
+            return True
+
+        for s in sources:
+            _attempt(s)
+
+        # Salvage re-pass (2026-07-07 postmortem): a wake-up run can start while the
+        # network/proxy is still dead — every source tried in that window burns its fast
+        # retries and stays dead for the WHOLE run, even though the network comes up
+        # minutes later (07-07: 18/28 sources died across dark-wake windows; by fetch-end
+        # the network was fine). One more round over just the failed sources, after a
+        # short settle delay, converts "died at the wrong moment" into a normal fetch.
+        # Still-dead sources stay failed — B2 widens their window next run.
+        failed_ids = {sid for sid, v in per_source.items() if v < 0}
+        if failed_ids:
+            ctx.log.info("salvage pass — retrying failed sources",
+                         failed=sorted(failed_ids), delay_s=SALVAGE_DELAY_S)
+            if SALVAGE_DELAY_S > 0:
+                time.sleep(SALVAGE_DELAY_S)
+            recovered = [s.id for s in sources if s.id in failed_ids and _attempt(s)]
+            if recovered:
+                ctx.stats["salvaged_sources"] = recovered
+                ctx.log.info("salvage pass recovered sources", recovered=recovered,
+                             still_failed=[sid for sid, v in per_source.items() if v < 0])
 
         ctx.candidates = list(pool.values())
         ctx.bump("candidates", len(ctx.candidates))
