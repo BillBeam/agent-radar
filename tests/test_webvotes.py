@@ -74,7 +74,8 @@ def test_poll_once_isolates_malformed_and_survives_network_error(tmp_path, monke
         def get(self, *a, **kw):
             raise OSError("net down")
 
-    assert WV.poll_once("https://site.example", "tok", session=_Boom()) == 0   # never raises
+    # never raises; -1 tells the loop to back off (503-before-KV / net down)
+    assert WV.poll_once("https://site.example", "tok", session=_Boom()) == -1
 
 
 def test_read_token_is_derived_not_secret():

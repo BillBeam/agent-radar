@@ -36,7 +36,8 @@ def read_token(secret: str) -> str:
 def poll_once(api_base: str, token: str, *, log: Any = None,
               session: Optional[requests.Session] = None) -> int:
     """One poll: fetch votes newer than the cursor, record each, advance the cursor.
-    Returns the number of votes recorded (0 on quiet or any network failure)."""
+    Returns the number of votes recorded, or -1 on any fetch failure (lets the loop
+    back off while e.g. the KV binding isn't provisioned yet and /votes answers 503)."""
     from .listener import item_snapshot   # same snapshot source as the card path
     s = session or _session()
     cursor = int((read_json(_CURSOR, {}) or {}).get("ts", 0))
@@ -48,7 +49,7 @@ def poll_once(api_base: str, token: str, *, log: Any = None,
     except Exception as e:  # noqa: BLE001 — a bad poll must never kill serve
         if log:
             log.warn("web-vote poll failed", error=repr(e)[:120])
-        return 0
+        return -1
     n = 0
     for v in votes:
         try:
@@ -91,9 +92,14 @@ def start_poller(*, base_url: str, log: Any = None) -> Optional[threading.Thread
     session = _session()
 
     def _loop() -> None:
+        # Consecutive failures back off 60s→15min (e.g. the KV binding isn't provisioned
+        # yet → /votes answers 503; a warn per minute would flood radar.log for nothing).
+        # Only the FIRST failure of a streak is logged; recovery resets to 60s.
+        fails = 0
         while True:
-            poll_once(api, token, log=log, session=session)
-            threading.Event().wait(INTERVAL_S)
+            rc = poll_once(api, token, log=log if fails == 0 else None, session=session)
+            fails = fails + 1 if rc < 0 else 0
+            threading.Event().wait(min(INTERVAL_S * (2 ** min(fails, 4)), 900.0))
 
     t = threading.Thread(target=_loop, name="web-vote-poller", daemon=True)
     t.start()
