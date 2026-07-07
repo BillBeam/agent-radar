@@ -52,7 +52,7 @@ launchd（每天 08:30） ─> python -m radar --mode daily
    ├─ [6] Deep-read    拉全文（arXiv 全文链，抓 120K/喂 80K）→ opus 教学级七节详解＋mermaid 图＋结果表
    │                   ——全部 10 篇都深读（顶配模型吃订阅额度：这是本系统最大的单日额度开销，约束见 docs/SPEC §4）
    ├─ [7] Synthesize   双渲染（钉钉精简版 + 完整版）
-   ├─ [8] Deliver      CF Pages 阅读页 + 钉钉互动卡（👍/👎）+ 本地归档 + Mac 通知
+   ├─ [8] Deliver      CF Pages 情报台（主页/当日详解/归档/统计，页面可投票）+ 钉钉互动卡（👍/👎）+ 本地归档 + Mac 通知
    └─ [9] Remember     写内容记忆（FTS5）
    └─ 跑完自动 → radar --mode eval 今天（忠实度/排序尺子；失败只记日志不碰投递）
 

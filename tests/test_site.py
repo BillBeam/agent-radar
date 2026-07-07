@@ -110,8 +110,10 @@ def test_home_and_archive_content(tmp_path, monkeypatch):
 def test_stats_aggregation_matches_seed_data(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
     m = ST.collect_stats("2026-07-06")
-    assert m["votes"] == {"up": 1, "down": 1, "pairs": 1, "dates": 1,
-                          "top_up_tags": [("agent", 1)], "need": m["votes"]["need"]}
+    assert m["votes"]["up"] == 1 and m["votes"]["down"] == 1
+    assert m["votes"]["pairs"] == 1                                   # 同日 1×1（与尺子语义一致）
+    assert m["votes"]["best_day"] == ("2026-07-05", 1, 1)
+    assert m["votes"]["top_up_tags"] == [("agent", 1)]
     assert [e["pct"] for e in m["eval"]] == [93.0, 95.0]
     assert [d["n"] for d in m["days"]] == [3, 3]
     assert m["days"][0]["cats"] == {"papers": 1, "harness": 2}
@@ -120,6 +122,20 @@ def test_stats_aggregation_matches_seed_data(tmp_path, monkeypatch):
     assert "你的反馈画像" in html and "系统健康" in html
     assert "<svg" in html and "93%" not in html or True   # charts render (labels are 93 %.0f)
     assert "忠实度" in html
+
+
+def test_pairs_are_per_day_not_cross_day(tmp_path, monkeypatch):
+    """排序尺子的配对在同一天内形成——跨天 👍×👎 不许相乘虚报进度。"""
+    _seed(tmp_path, monkeypatch)
+    fb = tmp_path / "feedback"
+    (fb / "2026-07-05.json").write_text(json.dumps({
+        "a1": {"vote": "up", "tags": []}, "a2": {"vote": "up", "tags": []}}), encoding="utf-8")
+    (fb / "2026-07-06.json").write_text(json.dumps({
+        "b1": {"vote": "down", "tags": []}, "b2": {"vote": "down", "tags": []},
+        "b3": {"vote": "down", "tags": []}}), encoding="utf-8")
+    m = ST.collect_stats("2026-07-06")
+    assert m["votes"]["up"] == 2 and m["votes"]["down"] == 3
+    assert m["votes"]["pairs"] == 0                       # 2↑(day1) × 3↓(day2) ≠ 6 对
 
 
 def test_stats_empty_data_states(tmp_path, monkeypatch):
@@ -152,6 +168,34 @@ def test_leak_gate_blocks_page(tmp_path, monkeypatch):
     assert "home" in res["skipped"]
     assert not (site / _seg(SECRET, "home") / "index.html").exists()   # hit → not written
     assert (site / _seg(SECRET, "stats") / "index.html").exists()      # others unaffected
+
+
+def test_gated_day_unlinked_everywhere_and_stale_dir_removed(tmp_path, monkeypatch):
+    """某天 md 命中 leak 闸 → 该天页不写 + 旧残留目录被清 + 归档该天改链原文 +
+    邻天的上一天/下一天跳过它（绝不指向 404 或已拦内容）。"""
+    site = _seed(tmp_path, monkeypatch, days=("2026-07-04", "2026-07-05", "2026-07-06"))
+    from radar.channels.web_reader import _seg
+    gated_seg = _seg(SECRET, "2026-07-05")
+    stale = site / gated_seg / "index.html"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("old leaky page", encoding="utf-8")
+
+    def fake_scan(text, *, source):
+        return ([{"label": "local:x", "line": 1}], None) if "2026-07-05" in source and \
+            source.startswith("site:day-md") else ([], None)
+
+    import radar.self_improve.leak_scan as LS
+    monkeypatch.setattr(LS, "scan_text", fake_scan)
+    res = S.build_site(SECRET, site_dir=site)
+    assert "day:2026-07-05" in res["skipped"]
+    assert not stale.parent.exists()                              # stale dir swept
+    d4 = (site / _seg(SECRET, "2026-07-04") / "index.html").read_text(encoding="utf-8")
+    assert gated_seg not in d4                                    # next-day skips the gated day
+    assert f'/{_seg(SECRET, "2026-07-06")}/' in d4                # …and chains to 07-06 instead
+    arch = (site / _seg(SECRET, "index") / "index.html").read_text(encoding="utf-8")
+    assert gated_seg not in arch                                  # archive never links it
+    assert "<span>2026-07-05" in arch                             # day still listed (plain)
+    assert "https://x/2026-07-05/1" in arch                       # rows fall back to originals
 
 
 def test_vote_ui_only_with_api_and_ids():

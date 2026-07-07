@@ -93,9 +93,10 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 ### 6.2 Fetch stage（`radar/stages/fetch.py`）— ✅
 并行抓取，**每源 circuit-break**（一个死源不拖累整跑），归一化 → 去重(vs `seen.json`) → 原子落盘 `data/candidates/{date}.json`（LLM 失败可事后补跑）。
 **停机补课窗（B2，2026-07-06）**：`data/state/fetch_state.json` 持久化每源上次成功 fetch 时间戳；有效窗口 = max(配置窗, 距该源上次成功 + 12h 余量)、14 天封顶——整机停机或单源连挂（如 07-06 早 arXiv 三连超时）都不再永久漏；正常连跑窗口零膨胀（实测）。
+**salvage 重试（2026-07-07）**：抓完后对失败源整体再试一轮（20s settle）——醒来补跑时代理未就绪会让源在暗醒窗口烧光快重试而「死在错误时刻」（07-07 实锤 18/28 源如此阵亡，fetch 结束时网络其实已恢复）；两轮都死才保持失败（B2 次日放大窗口）。配套 `run-daily.sh` 网络就绪门（经代理探 generate_204，最多 40×30s 醒时等待）+ `caffeinate -is` 防跑中被 idle sleep 切片。
 
 ### 6.3 Triage stage（`radar/stages/triage.py`）— ✅
-一次批量 `claude -p`(haiku) 给候选池 pointwise 0–10 打分 + 打标签 + 判自相关。rubric 在 `prompts/triage.md`（harness/工程深度 > 论文 > 模型发布 PR > 融资/口水，**外加重大前沿发布豁免**（2026-07-06）：核心厂商新模型家族/旗舰代际/重大能力/协议变更即使细节薄 → 8–10；**新一方命名产品地板** ≥6–7（简介是营销空话也上桌）；单向护栏保补丁·nightly·例行 release notes·地区可用性 照旧 0–4——修前 Introducing Claude Sonnet 5 / Claude Tag 曾连续 3–5 跑进池而从未上桌）。只传 title+source+summary 省 token。LLM 失败降级为权重启发式。
+一次批量 `claude -p`(haiku) 给候选池 pointwise 0–10 打分 + 打标签 + 判自相关。rubric 在 `prompts/triage.md`（harness/工程深度 > 论文 > 模型发布 PR > 融资/口水，**外加重大前沿发布豁免**（2026-07-06）：核心厂商新模型家族/旗舰代际/重大能力/协议变更即使细节薄 → 8–10；**新一方命名产品地板** ≥6–7（简介是营销空话也上桌）；单向护栏保补丁·nightly·例行 release notes·地区可用性 照旧 0–4——修前 Introducing Claude Sonnet 5 / Claude Tag 曾连续 3–5 跑进池而从未上桌）。只传 title+source+summary 省 token。**分块打分（2026-07-07）**：池按 80 条/块多次调用（全局索引）——B1 放开截尾后首个 219 条池曾让单发调用输出超时 ×3 而整池降级；现在单块失败只对该片走启发式（coverage 如实入账），全部块失败才整池降级。LLM 失败降级为权重启发式。
 
 ### 6.4 Quality gate（`radar/stages/quality_gate.py` + `radar/quality/rules.py`）— ✅
 可组合规则按序跑：`noise_blocklist`(配 `config/blocklist.yaml`) → `threshold`(<6 丢) → `cap`(按 score+0.4×weight 排序，封顶 max_items)。产出把关漏斗 stats。
@@ -107,8 +108,10 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 产出两个渲染：`markdown`(完整详解，落本地) + `markdown_brief`(精简：TL;DR + 每条标题/链接/一句话精华/标签)。结构确定性拼装，LLM 只写 TL;DR。持久化 `{date}.items.json` 供重渲染（不重跑 opus）。
 
 ### 6.7 Channels（`radar/channels/`）+ Deliver（`radar/stages/deliver.py`）— ✅
-- `local`(完整版 md 归档 + latest.md + index.md，always-on) · `macos`(osascript 通知) · `dingtalk`(自定义机器人 webhook，**HMAC 加签**，发精简版，**按字节**分块——钉钉限 20000 bytes，CJK 3 字节/字)。
+- 四渠道全自动：`web_reader`(CF Pages 阅读站，见下) → `dingtalk_card`(1v1 互动列表卡，每行 👍/👎 → Stream 回调写 feedback) → `local`(完整版 md 归档 + latest.md + index.md，always-on) → `macos`(osascript 通知)。旧 `dingtalk` 群 webhook 已停用（保留代码作回退）。
 - deliver 迭代启用渠道、**隔离失败**、投递后才标记 `seen.json`（防重推）。
+- **Web 情报台（2026-07-07，`_design.py`/`_site.py`/`_site_stats.py`）**：web_reader 每跑幂等重建整站——每日详解页（目录+锚点+上一天/下一天）+ **主页 HUB**（今日头条+三入口，seg=HMAC(secret,"home")，唯一需要收藏的 URL）+ **归档台**（"index"，倒序每天 `[N]` 标题+一句话洞察直达锚点）+ **数据统计**（"stats"，构建时聚合：反馈画像/忠实度趋势/每日构成/主题热力/系统健康，内联 SVG 零 JS 零后端）。统一设计系统（克制高级、light/dark、字体异步加载系统栈兜底）；**每页写盘前过 leak 闸**（命中=跳过该页）；站点根维持 404、全站 noindex。
+- **网页投票（同源）**：站点随部署携带 Pages `_worker.js`——`POST /vote`（页面 seg 即能力令牌，worker 以 WEB_SECRET 重算 HMAC 校验）+ `GET /votes`（独立派生 bearer）；`radar --mode serve` 内置轮询线程把票并进 `record_feedback`（与 `radar mark`/钉钉卡逐键一致，last-wins）。钉钉卡与网页**双通道**并存；KV 未绑定时页面投票钮不渲染、其余零影响。
 
 ### 6.8 LLM 后端（`radar/llm/claude_code.py`）— ✅
 `claude -p` 封装：剥离 API key、重试、模型分层、`complete()`/`complete_json()`(宽松 JSON 抽取 `_json.py`)。

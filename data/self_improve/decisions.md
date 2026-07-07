@@ -767,3 +767,78 @@ quality gate 97→24、below_threshold=66、cap 再砍 7），未进 finalist/to
   冗余）、blog.google 两 feed（活着但月度汇总+PR 稿多，Gemini 旗舰已有 deepmind-blog+HN+
   gemini-cli 三重冗余）。X/Twitter 维持有意不覆盖。
 - hf_papers 服务端 ~50 条深度不修：arXiv id 跨源去重使其本质是 arxiv 的策展视图，补课走 arxiv。
+
+---
+
+# 2026-07-07：断供根因（睡眠×fetch）三件套修复 + triage 分块 + Web 情报台（主页/归档/统计/网页投票）
+
+## PART 0：07-07 只投 1 条 —— 根因与修复（全部日志实锤，非推测）
+
+**时间线（radar.log + trace 交叉核对）**：launchd 08:44 DarkWake 触发（08:30 Mac 在睡）→
+fetch 阶段墙钟 2h00m / 单调时钟只走 4.1min（**睡眠切片的铁证**：monotonic 在 macOS 睡眠时冻结）
+→ 失败按 09:53 / 10:13 / 10:30 / 10:41 四个暗醒窗成簇（每簇 RemoteDisconnected ×3 快重试 ≈2.7s/源
+=烧进死代理）→ 10:44 真醒后网络恢复，**源表排在末尾的 9 个源全部成功**（谁活谁死由 sources.yaml
+顺序决定=纯时机事故）；arxiv-agents 独立 503×3（连挂第 3 天：07-06 读超时、07-07 503）。
+逐阶段计数：**fetch 13 候选（skipped_seen=0）→ triage 13 → 质量门 1（below_threshold=12）→
+rerank 1 → deepread 1（opus 258s 成功）→ 投递 1**。⚠️**头号嫌疑「opus 额度墙」被证伪**：当日
+opus 仅 1 次调用且成功；选择层/质量门行为全部正常——是输入饿死，不是管线坏。
+**07-06 其实更糟**：27/28 源活但 arxiv 挂 → 29 候选全部 below_threshold → **当天 0 投递**
+（dingtalk_card=false），用户没收到任何推送。降级横幅本身工作正常（digest 头部如实写了 9/28）。
+
+**修复三件套（每件针对一个确证环节）**：
+1. **fetch salvage 重试**（`fetch.py`，`SALVAGE_DELAY_S=20` 模块常量）：抓完后对失败源整体再试
+   一轮。当天场景下 fetch 结束时网络已恢复 → 一轮 salvage 能把 18 个「死在错误时刻」的源全部
+   捞回；两轮都死才保持 -1（B2 明日照常放大窗口）。**为什么不加大 _base 每源重试**：3×快重试
+   烧死代理的根因是「时机」不是「次数」，加大只会拖慢所有正常失败。
+2. **run-daily.sh 网络就绪门**：起跑先经环境代理探 gstatic/generate_204，40×30s——`sleep` 只在
+   醒着时走表 → 天然跨睡眠周期、每个醒来窗都会重探；探不通也放行（salvage/B2/横幅诚实兜底）。
+   **为什么探 gstatic 不探 apple**：captive.apple.com 国内直连可达，会在「代理死、直连活」时
+   假阳性——探针必须走 fetch 同一条路径。
+3. **caffeinate -is 包住 daily+eval**：起跑后不再被 idle sleep 切成暗醒碎片（07-07 fetch 被切
+   4 段就是没有它）。合盖睡眠软件层挡不住 → 配套用户操作项：`sudo pmset repeat wakeorpoweron
+   MTWRFSU 08:25:00`（08:25 全醒，网络就绪迎 08:30；需 sudo，留他执行）。
+
+**triage 分块**（当天补跑立刻暴露的下一颗雷）：B1 放开截尾后首个 200+ 池（219 条）让单发 haiku
+要吐 219 个 JSON 对象 → 三连超时 → 全池降级权重启发式（07-06 决策里预留的「若真跑出现覆盖率
+告警，下一步是 triage 分块」当天兑现）。修 = `CHUNK_SIZE=80` 全局索引分块：单块失败只对该片
+启发式（coverage 如实入账），全部块失败才整池降级。**当日补跑（triage 已降级那次）选择放行不
+重跑**：rerank(sonnet)/critic/deepread(opus) 全真，先把完整 digest 拿回来；分块修复走明早 08:30
+自然验收。补跑另证：**B1+B2 首次真实生效**（arxiv 窗口感知分页一口气 184 条、28/28 全活）。
+
+**当日恢复操作**：备份早间产物 → `seen.json` 摘掉已投的 Vera（deepread checkpoint 复用=零 opus
+重付）让终版 digest 是「早间 1 条的超集」而不是丢掉他已读那篇 → `DINGTALK_OUTTRACK_NONCE=r2`
+免同 outTrackId 卡片去重 → run-daily.sh 全链补跑（含自动 eval）。
+
+## Web 情报台（PART 1-5）：关键选择与理由
+
+- **设计系统单文件 `_design.py`**：token/字阶/chrome（主页·归档·统计导航+footer）一处定义，
+  日报/主页/归档/统计/周报五类页共用 → 「一个产品」而不是五张散页。方向=他拍板的克制高级
+  （Linear/Stripe 文档系）：发丝线代替阴影、单强调色（scope 蓝）+数据青绿、唯一动效=header
+  雷达扫描小标（prefers-reduced-motion 静止）、mono readout 行把真实遥测当身份元素。
+- **字体降级优先**：只异步加载 Inter（print→all swap，断网/被墙零阻塞零跳版），**中文不加载
+  webfont**——他设备上 PingFang SC 本就是最优 CJK 面，思源多 MB 下载在无代理手机上纯负担。
+- **投票走 Pages `_worker.js` 同源路由而非独立 Worker**：一次决策消掉三个坑——CORS、workers.dev
+  与 pages.dev 在墙内可达性差异、独立部署漂移；`/vote`+`/votes` 与静态页同域同部署。
+  **鉴权**：页面 seg 本身就是能力令牌（worker 持 WEB_SECRET 重算 HMAC(date) 拒无效——CF 本就
+  托管这些页面内容，secret 上 worker 不扩大实质暴露面）；读端 `/votes` 用独立派生
+  HMAC(secret,"vote-read")[:32] 做 bearer（永不出现在任何页面里）。**跨语言自证**：node
+  WebCrypto 与 python 派生 seg/bearer 逐字节一致。写入端 serve 轮询 60s → `record_feedback`
+  （与 mark 逐键一致=测试锁死）；游标落盘断点续传；run-serve.sh 在剥代理前把 HTTPS_PROXY 存成
+  AGENT_RADAR_WEB_PROXY 专供轮询（Stream 域内直连与 pages.dev 走代理并存）。
+  **现状 gate**：CF token 只有 Pages 权限（实测 KV create 401、Pages secret ✓ 已设 WEB_SECRET）
+  → 差一次性授权（token 加 Workers KV Storage:Edit 后跑 scripts/setup_vote_backend.sh，或
+  dashboard 手点建 namespace+绑 VOTES）；在此之前页面投票钮不渲染（vote_api 未配置），钉钉卡
+  投票照常=双通道退化安全。
+- **归档/主页/统计全部构建时静态聚合**（items.json/eval/feedback/state），幂等重跑同 URL；
+  统计页只出聚合数（调色板过 dataviz 六检 light+dark、类别→色槽固定映射、2px 分隔、图例可见
+  计数补足低对比槽；空态给行动指引不给坏图）。
+- **leak 闸前置到每页写盘之前**（同周报纪律）：命中=只跳过该页并留声。**首跑即咬合**：06-30
+  旧详解（隐私修复前产物）10 处命中（含 3 个本地身份词）→ 新设计**拒绝重渲染**；线上旧版
+  06-30 页仍在（他当天亲验过内容定为低敏）——**下线与否留他拍板**，归档页该天条目正常列出。
+- **站点根 `/` 维持 404**（无 index）；全部页面 noindex；`data/web/` 不入库。
+
+## 不做/边界（有意）
+
+- 不做实时后端/交互式 BI/登录/聊天后端/重 SPA/外部 CDN 依赖（字体为唯一优雅降级增强）。
+- V5 深读 prompt/深度/选择层/models.py 契约零改动；投票双通道保留（钉钉卡不动）。
+- 统计页图表零 JS（原生 <title> 提示即够）——个人静态仪表盘不值得为悬浮层引入脚本面。

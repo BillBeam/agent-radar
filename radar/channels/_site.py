@@ -138,24 +138,35 @@ def render_home(*, latest_date: str, latest_items: list[dict], n_days: int, n_it
 
 
 def render_archive(*, dates_desc: list[str], day_urls: dict[str, str],
-                   items_by_date: dict[str, list[dict]], nav: dict) -> str:
+                   items_by_date: dict[str, list[dict]], nav: dict,
+                   built_days: Optional[set] = None) -> str:
+    """Days whose reading page exists link to it (+#item-N anchors); a day WITHOUT a page
+    (no archive md, or blocked by the leak gate) still lists its items but links each row
+    to the ORIGINAL article instead — no dead links, no re-publishing gated content."""
     import html as _h
     total = sum(len(v) for v in items_by_date.values())
     cards = []
     for d in dates_desc:
-        url = day_urls.get(d)
-        if not url:
-            continue
+        has_page = built_days is None or d in built_days
+        url = day_urls.get(d) if has_page else None
         items = items_by_date.get(d, [])
+        if not items and not url:
+            continue
         rows = "".join(
-            f'<li><a href="{url}#item-{i + 1}"><span class="idx">[{i + 1}]</span>'
-            f"{_h.escape(str(it.get('title', '')))}</a>"
+            (f'<li><a href="{url}#item-{i + 1}"><span class="idx">[{i + 1}]</span>'
+             f"{_h.escape(str(it.get('title', '')))}</a>"
+             if url else
+             f'<li><a href="{_h.escape(str(it.get("url", "")), quote=True)}" target="_blank" '
+             f'rel="noopener"><span class="idx">[{i + 1}]</span>'
+             f"{_h.escape(str(it.get('title', '')))}</a>")
             + (f' <span class="why">— {_h.escape(str(it.get("reason") or ""))}</span>'
                if it.get("reason") else "") + "</li>"
             for i, it in enumerate(items))
+        head = (f'<a href="{url}">{d} {_weekday_zh(d)}</a>' if url
+                else f"<span>{d} {_weekday_zh(d)}</span>")
         n = f'<span class="readout">{len(items)} 篇</span>' if items else ""
         cards.append(f'<section class="day-card card"><header>'
-                     f'<a href="{url}">{d} {_weekday_zh(d)}</a>{n}</header>'
+                     f"{head}{n}</header>"
                      f'<ol class="dl">{rows}</ol></section>')
     body = ("<h1>往期归档</h1>"
             f'<p class="readout">{len(cards)} 天 · {total} 篇详解 · 最新在上</p>'
@@ -198,23 +209,43 @@ def build_site(secret: str, *,
         return True
 
     # -- day pages (today from the inline markdown; the rest from the local archive) --
+    # Two passes: ① pre-scan each day's MARKDOWN through the leak gate to fix the set of
+    # publishable days — so the prev/next chain and archive links never point at a page
+    # that the gate will refuse (e.g. the pre-privacy-fix 2026-06-30 详解). ② render only
+    # those; the rendered HTML still passes the final gate before writing (belt+braces).
     items_by_date: dict[str, list[dict]] = {}
-    for i, d in enumerate(dates):
-        items = read_items(d)
-        items_by_date[d] = items
+    md_map: dict[str, str] = {}
+    for d in dates:
+        items_by_date[d] = read_items(d)
         md = today[1] if (today and d == today[0]) else _archive_md(d)
-        if not md:
-            continue
-        prev_d = dates[i - 1] if i > 0 else None
-        next_d = dates[i + 1] if i + 1 < len(dates) else None
+        if md and _leak_gate(md, f"day-md:{d}", log):
+            md_map[d] = md
+        elif md:
+            skipped.append(f"day:{d}")
+    clean_days = [d for d in dates if d in md_map]
+    for i, d in enumerate(clean_days):
+        prev_d = clean_days[i - 1] if i > 0 else None
+        next_d = clean_days[i + 1] if i + 1 < len(clean_days) else None
+        items = items_by_date[d]
         html = render_day_page(
-            md, date=d, mermaid_svg=mermaid, nav=nav,
+            md_map[d], date=d, mermaid_svg=mermaid, nav=nav,
             prev_day=(day_urls[prev_d], prev_d) if prev_d else None,
             next_day=(day_urls[next_d], next_d) if next_d else None,
             vote_api=vote_api,
             item_ids={str(j + 1): it["id"] for j, it in enumerate(items) if it.get("id")} or None,
         )
         _emit(day_urls[d].strip("/"), html, f"day:{d}")
+
+    # A day that did NOT make it this run must not linger from an older build — the whole
+    # dir redeploys as a snapshot, so a stale file would keep re-publishing gated content.
+    written = {n.split(":", 1)[1] for n in built if n.startswith("day:")}
+    for d in dates:
+        if d not in written:
+            stale = site / day_urls[d].strip("/")
+            if stale.exists():
+                shutil.rmtree(stale, ignore_errors=True)
+                if log:
+                    log.warn("stale day page removed from site (gate/no-md)", date=d)
 
     latest = dates[-1] if dates else None
     stats_model = collect_stats(today[0] if today else (latest or datetime.now().strftime("%Y-%m-%d")))
@@ -230,8 +261,10 @@ def build_site(secret: str, *,
             votes_total=votes["up"] + votes["down"], faith_pct=faith)
         _emit(nav["home"].strip("/"), home_html, "home")
 
+        built_days = {n.split(":", 1)[1] for n in built if n.startswith("day:")}
         arch_html = render_archive(dates_desc=list(reversed(dates)), day_urls=day_urls,
-                                   items_by_date=items_by_date, nav=nav)
+                                   items_by_date=items_by_date, nav=nav,
+                                   built_days=built_days)
         _emit(nav["archive"].strip("/"), arch_html, "archive")
 
     stats_html = render_stats_page(stats_model, nav=nav)

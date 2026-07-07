@@ -84,30 +84,42 @@ def _eval_trend() -> list[dict]:
 
 
 def _votes(days: int = 3650) -> dict:
-    """Aggregate 👍/👎 across data/feedback/*.json (whole history — it IS the picture)."""
+    """Aggregate 👍/👎 across data/feedback/*.json (whole history — it IS the picture).
+    `best_pairs` follows the ranking ruler's semantics: pairs form WITHIN one day
+    (that day's 👍 × that day's 👎) — the D-stage progress is the best single day."""
     up = down = 0
     tag_up: dict[str, int] = {}
-    dates = set()
+    best_pairs = 0
+    best_day = ("", 0, 0)
+    n_dates = 0
     for p in sorted(Paths.feedback.glob("*.json")):
-        if not _DATE_RE.match(p.name[:-5]):
+        d = p.name[:-5]
+        if not _DATE_RE.match(d):
             continue
         doc = read_json(p, {}) or {}
         if not isinstance(doc, dict):
             continue
+        d_up = d_down = 0
         for snap in doc.values():
             if not isinstance(snap, dict):
                 continue
             v = snap.get("vote")
             if v == "up":
-                up += 1
-                dates.add(p.name[:-5])
+                d_up += 1
                 for t in snap.get("tags") or []:
                     tag_up[t] = tag_up.get(t, 0) + 1
             elif v == "down":
-                down += 1
-                dates.add(p.name[:-5])
+                d_down += 1
+        if d_up + d_down:
+            n_dates += 1
+        up += d_up
+        down += d_down
+        if d_up * d_down > best_pairs:
+            best_pairs = d_up * d_down
+            best_day = (d, d_up, d_down)
     top_up = sorted(tag_up.items(), key=lambda kv: (-kv[1], kv[0]))[:6]
-    return {"up": up, "down": down, "pairs": up * down, "dates": len(dates), "top_up_tags": top_up}
+    return {"up": up, "down": down, "pairs": best_pairs, "best_day": best_day,
+            "dates": n_dates, "top_up_tags": top_up}
 
 
 def collect_stats(today: str, *, window_days: int = 14) -> dict[str, Any]:
@@ -128,9 +140,10 @@ def collect_stats(today: str, *, window_days: int = 14) -> dict[str, Any]:
         for it in items:
             for t in it.get("tags") or []:
                 tag_counts[t] = tag_counts.get(t, 0) + 1
-            if (it.get("category") in ("labs", "harness") and
-                    ("release" in (it.get("tags") or []) or
-                     str(it.get("title", "")).lower().startswith(("introducing", "announcing")))):
+            # 厂商发布 = labs 类目，或任何源里 Introducing/Announcing 级命名发布；
+            # 普通 harness 仓的例行 release（CLI vX.Y.Z 补丁）不算「厂商发布」。
+            if (it.get("category") == "labs" or
+                    str(it.get("title", "")).lower().startswith(("introducing", "announcing"))):
                 vendor_hits.append({"date": d, "title": it.get("title", ""), "url": it.get("url", "")})
 
     from ..eval.ranking import MIN_PAIRS
@@ -167,7 +180,8 @@ def collect_stats(today: str, *, window_days: int = 14) -> dict[str, Any]:
             "errors": len(last_run.get("errors") or []),
             "live": (last_run.get("sources") or {}).get("live"),
             "total": (last_run.get("sources") or {}).get("total"),
-            "failed": ((last_run.get("sources") or {}).get("failed") or [])[:8],
+            "failed": ((last_run.get("sources") or {}).get("failed") or [])[:6],
+            "failed_n": len((last_run.get("sources") or {}).get("failed") or []),
             "selected": last_run.get("selected"),
             "deepread_ok": last_run.get("deepread_ok"),
             "stale_sources": stale[:6],
@@ -220,11 +234,10 @@ def _svg_faithfulness(trend: list[dict], w: int = 640, h: int = 190) -> str:
     for (x, y), p in zip(pts, trend):
         dots.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" class="dot">'
                     f"<title>{_html.escape(p['date'])} · 忠实度 {p['pct']}%（核查 {p['n']} 篇）</title></circle>")
-    for idx in (0, len(trend) - 1):
-        x, y = pts[idx]
-        anchor = "start" if idx == 0 else "end"
-        labels.append(f'<text x="{x:.1f}" y="{y - 10:.1f}" class="dlabel" '
-                      f'text-anchor="{anchor}">{trend[idx]["pct"]:.0f}%</text>')
+    # direct label on the CURRENT value only (selective labels; ticks carry the scale)
+    x, y = pts[-1]
+    labels.append(f'<text x="{x:.1f}" y="{y - 10:.1f}" class="dlabel" '
+                  f'text-anchor="end">{trend[-1]["pct"]:.0f}%</text>')
     for idx in (0, len(trend) - 1):
         x, _ = pts[idx]
         anchor = "start" if idx == 0 else "end"
@@ -374,9 +387,11 @@ def render_stats_page(model: dict, nav: Optional[dict] = None) -> str:
     # ① feedback picture
     if v["up"] + v["down"]:
         remain = max(0, need - pairs)
-        pair_hint = (f"每个 👍 和每个 👎 构成一次「谁该排前面」的对比：{v['up']} × {v['down']} = {pairs} 次。"
-                     + (f"再凑 {remain} 次，排序就能用你的口味来校准。" if remain else
-                        "已够数——排序尺子在用你的投票校准。"))
+        bd, bu, bdn = v.get("best_day") or ("", 0, 0)
+        pair_hint = (f"同一天里的每个 👍 和每个 👎 构成一次「谁该排前面」的对比。"
+                     f"目前最好的一天（{bd}）：{bu} × {bdn} = {pairs} 次；"
+                     + (f"单日凑满 {need} 次，那天的排序就有了以你口味为准的正确性信号——还差 {remain} 次。"
+                        if remain else f"已凑满 {need} 次，排序尺子有了以你口味为准的正确性信号。"))
         top_tags = ""
         if v["top_up_tags"]:
             rows = _svg_tag_bars(v["top_up_tags"])
@@ -416,8 +431,10 @@ def render_stats_page(model: dict, nav: Optional[dict] = None) -> str:
         f"{'无错误' if h['errors'] == 0 else str(h['errors']) + ' 个错误'}</span></li>",
         f'<li><span class="st">{src_st}</span><span class="k">来源覆盖</span>'
         f"<span>{h['live']}/{h['total']} 个源正常"
-        + (f"（失败：{_html.escape('、'.join(h['failed']))}）" if h["failed"] else "") + "</span></li>",
-        f'<li><span class="st">📬</span><span class="k">昨日产出</span>'
+        + ((f"（失败：{_html.escape('、'.join(h['failed']))}"
+            + (f" 等 {h['failed_n']} 个" if h["failed_n"] > len(h["failed"]) else "") + "）")
+           if h["failed"] else "") + "</span></li>",
+        f'<li><span class="st">📬</span><span class="k">上次产出</span>'
         f"<span>入选 {h['selected']} 条 · 深读完成 {h['deepread_ok']} 篇</span></li>",
     ]
     if h["stale_sources"]:
