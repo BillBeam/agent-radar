@@ -17,6 +17,12 @@ from ..core.ports import Stage
 from ..core.registry import register
 from ..llm._json import salvage_objects
 
+# Per-call ceiling (2026-07-07 postmortem): the first 200+ pool after the B1 arXiv
+# un-truncation made ONE whole-pool haiku call emit 200+ JSON objects — it timed out
+# 3× and degraded the ENTIRE pool to the weight heuristic. Chunking bounds each call's
+# output; a failed chunk degrades only itself.
+CHUNK_SIZE = 80
+
 
 def _recency_key(it: Item) -> float:
     if it.published_at is None:
@@ -55,29 +61,54 @@ class TriageStage(Stage):
         components = ", ".join(tax.get("self_components", []))
         system = Paths.prompts.joinpath("triage.md").read_text(encoding="utf-8")
 
-        lines = [
-            f"[{i}] ({it.category}|{it.source_name}) {it.title} :: {(it.summary or '')[:160]}"
-            for i, it in enumerate(pool)
-        ]
-        user = (
-            f"TOPIC TAXONOMY (use exact strings): {topics}\n"
-            f"SELF_COMPONENTS: {components}\n\n"
-            f"Score these {len(pool)} candidates per the rubric. Return ONLY the JSON array.\n\n"
-            + "\n".join(lines)
-        )
+        # Chunked calls with GLOBAL indices — bounded output per call; a failed chunk
+        # heuristic-fills only its own slice (the coverage accounting below already
+        # treats uncovered items honestly, never as silent zeros).
+        chunks = [pool[i:i + CHUNK_SIZE] for i in range(0, len(pool), CHUNK_SIZE)]
+        by_index: dict[int, dict] = {}
+        failed_chunks = 0
+        last_err = ""
+        base = 0
+        for ci, chunk in enumerate(chunks):
+            lines = [
+                f"[{base + j}] ({it.category}|{it.source_name}) {it.title} :: {(it.summary or '')[:160]}"
+                for j, it in enumerate(chunk)
+            ]
+            user = (
+                f"TOPIC TAXONOMY (use exact strings): {topics}\n"
+                f"SELF_COMPONENTS: {components}\n\n"
+                f"Score these {len(chunk)} candidates per the rubric. Return ONLY the JSON array.\n\n"
+                + "\n".join(lines)
+            )
+            data, res = ctx.llm.complete_json(user, system=system,
+                                              model=ctx.config.models.triage, tag=self.name)
+            if not isinstance(data, list) or not data:
+                # one bad element shouldn't nuke the batch — salvage flat objects
+                salvaged = salvage_objects(res.text) if res.text else []
+                if salvaged:
+                    data = salvaged
+                    ctx.log.warn("triage json malformed — salvaged objects",
+                                 chunk=ci, got=len(salvaged))
+                else:
+                    failed_chunks += 1
+                    last_err = res.error or "bad triage output"
+                    ctx.log.warn("triage chunk failed — heuristic for this slice only",
+                                 chunk=ci, n=len(chunk), reason=last_err)
+                    base += len(chunk)
+                    continue
+            for r in data:
+                if isinstance(r, dict) and "i" in r:
+                    try:
+                        by_index[int(r["i"])] = r
+                    except (TypeError, ValueError):
+                        continue
+            base += len(chunk)
 
-        data, res = ctx.llm.complete_json(user, system=system, model=ctx.config.models.triage, tag=self.name)
-        if not isinstance(data, list) or not data:
-            # one bad element shouldn't nuke the batch — salvage flat objects
-            salvaged = salvage_objects(res.text) if res.text else []
-            if salvaged:
-                data = salvaged
-                ctx.log.warn("triage json malformed — salvaged objects", got=len(salvaged))
-            else:
-                self._fallback(pool, ctx, res.error or "bad triage output")
-                return
-
-        by_index = {int(r["i"]): r for r in data if isinstance(r, dict) and "i" in r}
+        if failed_chunks == len(chunks):
+            self._fallback(pool, ctx, last_err or "all triage chunks failed")
+            return
+        if failed_chunks:
+            ctx.stats["triage_chunks_failed"] = failed_chunks
         scored = 0
         unscored = 0
         for i, it in enumerate(pool):

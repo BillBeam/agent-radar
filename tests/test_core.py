@@ -485,3 +485,75 @@ def test_llm_subprocess_disables_all_tools(monkeypatch):
     i = cmd.index("--tools")
     assert cmd[i + 1] == ""                       # all tools disabled, text-only completion
     assert "--max-turns" in cmd and cmd[cmd.index("--max-turns") + 1] == "1"
+
+
+# ---- chunked triage (07-07: one 219-item haiku call timed out ×3 → whole-pool degrade) ----
+def test_triage_chunks_with_global_indices(monkeypatch):
+    import radar.stages.triage as T
+    from radar.stages.triage import TriageStage
+    monkeypatch.setattr(T, "CHUNK_SIZE", 2)
+    ctx = _ctx()
+    ctx.candidates = [_item(title=f"t{i}") for i in range(5)]
+    calls = []
+
+    class LLM:
+        def complete_json(self, prompt, **kw):
+            import re as _re
+            idx = [int(m) for m in _re.findall(r"^\[(\d+)\]", prompt, _re.M)]
+            calls.append(idx)
+            from types import SimpleNamespace
+            return ([{"i": i, "score": 9 - i, "reason": f"r{i}", "tags": []} for i in idx],
+                    SimpleNamespace(text="[]", error=None))
+
+    ctx.llm = LLM()
+    TriageStage().run(ctx)
+    assert calls == [[0, 1], [2, 3], [4]]                    # 3 calls, GLOBAL indices
+    assert [it.score for it in ctx.items] == [9, 8, 7, 6, 5]  # every item scored by its chunk
+    assert ctx.stats["triage_coverage"] == 1.0
+    assert "triage_degraded" not in ctx.stats
+
+
+def test_triage_single_failed_chunk_degrades_only_itself(monkeypatch):
+    import radar.stages.triage as T
+    from radar.stages.triage import TriageStage
+    monkeypatch.setattr(T, "CHUNK_SIZE", 2)
+    ctx = _ctx()
+    ctx.candidates = [_item(title=f"t{i}", weight=1.0) for i in range(4)]
+    n = {"call": 0}
+
+    class LLM:
+        def complete_json(self, prompt, **kw):
+            import re as _re
+            from types import SimpleNamespace
+            n["call"] += 1
+            if n["call"] == 2:                               # second chunk times out
+                return None, SimpleNamespace(text="", error="timeout")
+            idx = [int(m) for m in _re.findall(r"^\[(\d+)\]", prompt, _re.M)]
+            return ([{"i": i, "score": 8, "reason": "ok", "tags": []} for i in idx],
+                    SimpleNamespace(text="[]", error=None))
+
+    ctx.llm = LLM()
+    TriageStage().run(ctx)
+    assert [it.score for it in ctx.items[:2]] == [8, 8]       # chunk 1 scored by LLM
+    assert all("启发式兜底" in (it.reason or "") for it in ctx.items[2:])   # chunk 2 heuristic
+    assert ctx.stats["triage_chunks_failed"] == 1
+    assert "triage_degraded" not in ctx.stats                 # NOT a whole-pool degrade
+    assert ctx.stats["triage_coverage"] == 0.5
+
+
+def test_triage_all_chunks_failed_falls_back_whole_pool(monkeypatch):
+    import radar.stages.triage as T
+    from radar.stages.triage import TriageStage
+    monkeypatch.setattr(T, "CHUNK_SIZE", 2)
+    ctx = _ctx()
+    ctx.candidates = [_item(title=f"t{i}") for i in range(3)]
+
+    class LLM:
+        def complete_json(self, prompt, **kw):
+            from types import SimpleNamespace
+            return None, SimpleNamespace(text="", error="timeout")
+
+    ctx.llm = LLM()
+    TriageStage().run(ctx)
+    assert ctx.stats["triage_degraded"] is True               # honest whole-run flag preserved
+    assert all(it.score is not None for it in ctx.items)
