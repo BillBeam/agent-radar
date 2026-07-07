@@ -87,6 +87,7 @@ class WebReaderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_name: Optional[str] = None    # Cloudflare Pages project → https://{project_name}.pages.dev
     base_url: Optional[str] = None        # override (e.g. a custom domain); else derived from project_name
+    vote_api: Optional[str] = None        # same-origin vote endpoint ("/vote"); None → page buttons off
 
     def resolved(self) -> dict:
         """Non-secret config only (env over config). The two secrets are read straight from env at
@@ -95,7 +96,8 @@ class WebReaderConfig(BaseModel):
         base = (os.getenv("AGENT_RADAR_WEB_BASE_URL") or self.base_url
                 or (f"https://{project}.pages.dev" if project else None))
         return {"project_name": project, "base_url": base.rstrip("/") if base else None,
-                "account_id": os.getenv("CLOUDFLARE_ACCOUNT_ID")}
+                "account_id": os.getenv("CLOUDFLARE_ACCOUNT_ID"),
+                "vote_api": os.getenv("AGENT_RADAR_VOTE_API") or self.vote_api}
 
     def missing(self) -> list[str]:
         """Which required ids/creds are unset (NAMES only — never values)."""

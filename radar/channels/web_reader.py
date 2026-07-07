@@ -86,15 +86,29 @@ class WebReaderChannel(Channel):
         if not secret:
             return False
         seg = _seg(secret, digest.date)
-        del secret                                          # drop the reference once seg is derived
         r = cfg.resolved()                                  # non-secret ids only (no token, no web secret)
 
+        # Full-site build: today's page + every archived day (prev/next nav) + home/archive/
+        # stats hubs, all leak-gated. If the hub build ever breaks, fall back to the original
+        # single-page render — today's 详解 reaching the phone stays the non-negotiable.
         try:
-            html = render_day_page(digest.markdown, date=digest.date, mermaid_svg=mermaid_to_svg)
-            atomic_write_text(Paths.web / "site" / seg / "index.html", html)
+            from ._site import build_site
+            res = build_site(secret, today=(digest.date, digest.markdown),
+                             vote_api=r.get("vote_api"), mermaid=mermaid_to_svg, log=ctx.log)
+            if f"day:{digest.date}" not in res["built"]:
+                raise RuntimeError("today's page was not built (leak gate or render failure)")
+            ctx.stats["home_url"] = f'{r["base_url"]}{res["nav"]["home"]}'
         except Exception as e:  # noqa: BLE001
-            ctx.log.warn("web_reader render/write failed", error=repr(e)[:160])
-            return False
+            ctx.log.warn("site build failed — falling back to single day page",
+                         error=repr(e)[:160])
+            try:
+                html = render_day_page(digest.markdown, date=digest.date, mermaid_svg=mermaid_to_svg)
+                atomic_write_text(Paths.web / "site" / seg / "index.html", html)
+            except Exception as e2:  # noqa: BLE001
+                ctx.log.warn("web_reader render/write failed", error=repr(e2)[:160])
+                return False
+        finally:
+            del secret                                      # drop the reference once pages are derived
 
         if not self._deploy(r["project_name"], ctx):
             return False

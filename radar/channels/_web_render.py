@@ -23,8 +23,11 @@ Pure except the injected `mermaid_svg` (the only construct that may touch a subp
 from __future__ import annotations
 
 import html as _html
+import json as _json
 import re
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
+
+from ._design import page_shell
 
 # one token = bold | italic | [text](url) — same grammar as _docx_render._INLINE
 _INLINE = re.compile(r"(\*\*.+?\*\*|\*[^*].*?\*|\[[^\]]+\]\([^)]+\))")
@@ -91,9 +94,19 @@ def _fmt_read_stats(chars: int) -> str:
     return f"约{mins}分钟"
 
 
+def _vote_bar(item_id: str) -> str:
+    return (f'<div class="vote" data-item="{_html.escape(item_id, quote=True)}">'
+            '<span class="vote-q">这篇对你有用吗</span>'
+            '<button class="vbtn" data-v="up">👍 有用</button>'
+            '<button class="vbtn" data-v="down">👎 没用</button></div>')
+
+
 def _render_body(md: str, mermaid_svg: Optional[Callable[[str], Optional[str]]] = None,
+                 vote_ids: Optional[Mapping[str, str]] = None,
                  ) -> tuple[list[str], list[tuple[str, str, str]]]:
-    """Parse markdown lines → (html parts, toc entries [(N, plain '[N] title', read-stats)])."""
+    """Parse markdown lines → (html parts, toc entries [(N, plain '[N] title', read-stats)]).
+    `vote_ids` ([N] → item id) adds a 👍/👎 bar at each item's end — only when the page has
+    a vote API to post to (see render_day_page)."""
     parts: list[str] = []
     toc: list[tuple[str, str, str]] = []
     bullets: list[str] = []
@@ -113,6 +126,8 @@ def _render_body(md: str, mermaid_svg: Optional[Callable[[str], Optional[str]]] 
     def _close_item() -> None:
         nonlocal cur_item
         if cur_item is not None:
+            if vote_ids and cur_item in vote_ids:
+                parts.append(_vote_bar(vote_ids[cur_item]))
             parts.append('<p class="backtop"><a href="#toc">↑ 返回目录</a></p>')
             cur_item = None
 
@@ -171,7 +186,8 @@ def _render_body(md: str, mermaid_svg: Optional[Callable[[str], Optional[str]]] 
                 n = mi.group(1)
                 cur_item = n
                 toc.append((n, _MD_LINK_SUB.sub(r"\1", text), ""))   # stats filled after the pass
-                parts.append(f'<h3 id="item-{n}" class="item">{_inline_html(text)}</h3>')
+                parts.append(f'<h3 id="item-{n}" class="item">'
+                             f'<span class="idx">[{n}] </span>{_inline_html(mi.group(2))}</h3>')
             else:
                 parts.append(f"<h{level}>{_inline_html(text)}</h{level}>")
         elif (m := _BOLD_LINE.match(line)):                   # section heads + sub-heads
@@ -202,76 +218,102 @@ def _toc_html(toc: list[tuple[str, str, str]]) -> str:
             f'<div class="toc-h">目录 · 点标题跳到那篇</div><ul>{lis}</ul></nav>')
 
 
-_CSS = """
-:root{color-scheme:light dark;--fg:#1b1b1d;--muted:#6b7280;--bg:#fff;--card:#f6f7f9;
---border:#e6e7ea;--link:#0b66c3;--axis:#0b5cad;--qbg:#fff7e0;--qbd:#e9b400;--zebra:#fafbfc}
-@media (prefers-color-scheme:dark){:root{--fg:#e7e8ea;--muted:#9aa0a6;--bg:#151619;--card:#1e2024;
---border:#2b2d33;--link:#66aaff;--axis:#8fbcff;--qbg:#2a2410;--qbd:#8a7300;--zebra:#1a1c20}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);-webkit-text-size-adjust:100%;
-font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
-font-size:17px;line-height:1.78}
-main{max-width:720px;margin:0 auto;padding:22px 18px 120px}
-h1{font-size:1.5rem;line-height:1.35;margin:.1em 0 .5em}
-h2{font-size:1.2rem;margin:1.9em 0 .6em;padding-bottom:.3em;border-bottom:1px solid var(--border)}
-h3{font-size:1.14rem;margin:1.6em 0 .5em}
-h3.item{margin:2.1em 0 .5em;padding-top:1.15em;border-top:2px solid var(--border);scroll-margin-top:14px}
+READER_CSS = """
+h1{font-size:1.42rem}
+h2{padding-bottom:.35em;border-bottom:1px solid var(--hairline)}
+h3.item{font-size:1.16rem;line-height:1.5;margin:2.4em 0 .5em;padding-top:1.4em;
+border-top:1px solid var(--border);scroll-margin-top:14px}
 h3.item a{color:var(--fg)}
-p{margin:.72em 0}
-p.axis{font-weight:700;color:var(--axis);font-size:1.02rem;margin:1.35em 0 .25em}
-p.axis.sect{font-size:1.08rem;margin:1.9em 0 .35em;padding-top:.85em;border-top:1px dashed var(--border)}
-a{color:var(--link);text-decoration:none;overflow-wrap:anywhere}
-a:active,a:hover{text-decoration:underline}
-ul{margin:.5em 0;padding-left:1.35em}
-li{margin:.36em 0}
-em{font-style:italic;color:var(--muted)}
-blockquote{margin:.85em 0;padding:.55em .95em;background:var(--qbg);border-left:4px solid var(--qbd);
-border-radius:5px}
-.toc{background:var(--card);border:1px solid var(--border);border-radius:11px;padding:14px 16px;margin:1.5em 0}
-.toc-h{font-weight:700;font-size:.9rem;color:var(--muted);margin-bottom:.5em}
+h3.item a:hover{color:var(--accent)}
+.item .idx{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+color:var(--accent);font-size:.86em;font-weight:600;letter-spacing:.02em}
+p.axis{font-weight:650;color:var(--accent-ink);font-size:1rem;margin:1.4em 0 .25em}
+p.axis.sect{font-size:1.06rem;margin:2em 0 .4em;padding-top:.9em;border-top:1px dashed var(--hairline)}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+padding:16px 18px;margin:1.6em 0}
+.toc-h{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+font-size:.72rem;letter-spacing:.08em;color:var(--faint);margin-bottom:.7em}
 .toc ul{list-style:none;margin:0;padding:0}
-.toc li{margin:.32em 0;line-height:1.5}
-.toc a{font-size:.98rem}
-.toc .mins{color:var(--muted);font-size:.8rem;margin-left:.5em;white-space:nowrap}
-.tbl{overflow-x:auto;margin:.9em 0;border:1px solid var(--border);border-radius:9px}
-table{border-collapse:collapse;width:100%;font-size:.9rem;line-height:1.5;min-width:460px}
-th,td{padding:.5em .65em;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
-thead th{background:var(--card);font-weight:700}
-tbody tr:nth-child(even){background:var(--zebra)}
-tbody tr:last-child td{border-bottom:none}
-pre.code{background:var(--card);border:1px solid var(--border);border-radius:9px;
-padding:.8em .95em;overflow-x:auto;font-size:.84rem;line-height:1.55;margin:.9em 0}
-pre.code code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-figure.diagram{margin:1em 0;padding:12px 8px;background:#fff;border:1px solid var(--border);
-border-radius:10px;overflow-x:auto;text-align:center}
+.toc li{margin:.42em 0;line-height:1.55}
+.toc a{font-size:.95rem;color:var(--fg)}
+.toc a:hover{color:var(--accent)}
+.toc .mins{color:var(--faint);font-size:.76rem;margin-left:.55em;white-space:nowrap;
+font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace}
+figure.diagram{margin:1.1em 0;padding:14px 10px;background:#fff;border:1px solid var(--border);
+border-radius:12px;overflow-x:auto;text-align:center}
 figure.diagram svg{max-width:100%;height:auto}
-p.caption{color:var(--muted);font-size:.88rem;margin:.3em 0 1.1em;text-align:center}
-p.backtop{margin:1.5em 0 .2em;text-align:right}
-p.backtop a{font-size:.88rem;color:var(--muted)}
+p.caption{color:var(--muted);font-size:.86rem;margin:.35em 0 1.2em;text-align:center}
+p.backtop{margin:1.4em 0 .2em;text-align:right}
+p.backtop a{font-size:.85rem;color:var(--faint)}
+.vote{display:flex;align-items:center;gap:10px;margin:1.7em 0 .3em;padding:.75em 1em;
+background:var(--surface);border:1px solid var(--border);border-radius:12px;flex-wrap:wrap}
+.vote-q{font-size:.88rem;color:var(--muted);margin-right:auto}
+.vbtn{font:inherit;font-size:.9rem;padding:.4em .95em;border-radius:999px;cursor:pointer;
+border:1px solid var(--border);background:var(--bg);color:var(--fg);transition:border-color .12s}
+.vbtn:hover{border-color:var(--faint)}
+.vbtn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+.vbtn.busy{opacity:.55;pointer-events:none}
+"""
+
+# Vanilla, self-contained vote wiring — the ONLY script on the page, and only when a vote API
+# exists. The page's own unguessable path segment rides along as the capability token; the
+# Worker recomputes HMAC(secret, date) and rejects mismatches. localStorage keeps the pressed
+# state per (date, item) so a revisit shows what was already voted. Votes may be changed
+# (last-write-wins, same as `radar mark` / the DingTalk card).
+_VOTE_JS = """
+(function(){
+var API=%(api)s,DATE=%(date)s,SEG=(location.pathname.split("/")[1]||"");
+function k(id){return "ar-vote-"+DATE+"-"+id}
+function mark(v,vote){v.querySelectorAll(".vbtn").forEach(function(b){
+  b.classList.toggle("on",b.dataset.v===vote);b.classList.remove("busy")});
+  v.querySelector(".vote-q").textContent=vote==="up"?"已记录：有用":"已记录：可跳过（票已进反馈）";}
+document.querySelectorAll(".vote").forEach(function(v){
+  var id=v.getAttribute("data-item");
+  var saved=null;try{saved=localStorage.getItem(k(id))}catch(e){}
+  if(saved)mark(v,saved);
+  v.querySelectorAll(".vbtn").forEach(function(b){b.addEventListener("click",function(){
+    b.classList.add("busy");
+    fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({date:DATE,item_id:id,vote:b.dataset.v,seg:SEG})})
+    .then(function(r){if(!r.ok)throw 0;
+      try{localStorage.setItem(k(id),b.dataset.v)}catch(e){}
+      mark(v,b.dataset.v)})
+    .catch(function(){b.classList.remove("busy");
+      v.querySelector(".vote-q").textContent="没发出去——网络原因，稍后再点一次"});
+  })});
+});
+})();
 """
 
 
 def render_day_page(md: str, *, date: str = "",
-                    mermaid_svg: Optional[Callable[[str], Optional[str]]] = None) -> str:
+                    mermaid_svg: Optional[Callable[[str], Optional[str]]] = None,
+                    nav: Optional[Mapping[str, str]] = None,
+                    prev_day: Optional[tuple[str, str]] = None,
+                    next_day: Optional[tuple[str, str]] = None,
+                    vote_api: Optional[str] = None,
+                    item_ids: Optional[Mapping[str, str]] = None) -> str:
     """`Digest.markdown` → a single noindex HTML page (TOC + per-item #item-N anchors).
-    `mermaid_svg` (optional) turns ```mermaid fences into inline SVG; None → code-block fallback."""
-    parts, toc = _render_body(md, mermaid_svg)
+    `mermaid_svg` (optional) turns ```mermaid fences into inline SVG; None → code-block fallback.
+    `nav` (home/archive/stats URLs) draws the site chrome; `prev_day`/`next_day` are (url, label)
+    for the bottom day-to-day walk; `vote_api` + `item_ids` ([N] → item id) enable 👍/👎 bars."""
+    vote_ids = item_ids if (vote_api and item_ids) else None
+    parts, toc = _render_body(md, mermaid_svg, vote_ids)
     if toc:
         at = next((i for i, p in enumerate(parts) if p.startswith("<h2")), None)
         if at is None:
             at = next((i for i, p in enumerate(parts) if p.startswith("<h1")), -1) + 1
         parts.insert(at, _toc_html(toc))
+    if prev_day or next_day:
+        left = (f'<a href="{_html.escape(prev_day[0], quote=True)}">← {_html.escape(prev_day[1])}</a>'
+                if prev_day else "<span></span>")
+        right = (f'<a href="{_html.escape(next_day[0], quote=True)}">{_html.escape(next_day[1])} →</a>'
+                 if next_day else "<span></span>")
+        parts.append(f'<nav class="daynav" aria-label="按天翻页">{left}{right}</nav>')
     body = "\n".join(parts)
-    title = _html.escape(f"Agent Radar · {date}" if date else "Agent Radar")
-    return (
-        "<!doctype html>\n"
-        '<html lang="zh-CN">\n<head>\n'
-        '<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        '<meta name="robots" content="noindex, nofollow">\n'
-        f"<title>{title}</title>\n"
-        f"<style>{_CSS}</style>\n"
-        "</head>\n<body>\n<main>\n"
-        f"{body}\n"
-        "</main>\n</body>\n</html>\n"
-    )
+    if vote_ids:
+        body += "\n<script>" + _VOTE_JS % {"api": _json.dumps(vote_api),
+                                           "date": _json.dumps(date)} + "</script>"
+    return page_shell(title=f"Agent Radar · {date}" if date else "Agent Radar",
+                      body=body, active="", nav=nav, extra_css=READER_CSS,
+                      foot_note=f"{date} · 详解由 AI 生成，事实以原文为准" if date else "")

@@ -27,7 +27,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from ..channels._web_render import _CSS, _inline_html
+from ..channels._design import page_shell
+from ..channels._web_render import READER_CSS, _inline_html
 from ..channels.web_reader import _seg, deploy_site
 from ..core.config import Paths, RadarConfig
 from ..core.io import atomic_write_text
@@ -40,14 +41,10 @@ _BOLD_LINE = re.compile(r"^\*\*(.+)\*\*$")
 _TABLE_ROW = re.compile(r"^\|(.+)\|\s*$")
 _TABLE_SEP = re.compile(r"^\|[\s:|-]+\|$")
 
-# on top of the day-page CSS: tables (the trend table) + a card around the at-a-glance block
+# on top of the shared design system (tables/blockquote/code live in BASE_CSS now):
+# only the review-specific at-a-glance card remains.
 _EXTRA_CSS = """
-.tbl{overflow-x:auto;margin:.9em 0;border:1px solid var(--border);border-radius:9px}
-table{border-collapse:collapse;width:100%;font-size:.9rem;line-height:1.55}
-th,td{border-bottom:1px solid var(--border);padding:.5em .7em;text-align:left;vertical-align:top}
-tr:last-child td{border-bottom:none}
-th{background:var(--card);font-weight:600;white-space:nowrap}
-.glance{background:var(--card);border:1px solid var(--border);border-radius:11px;
+.glance{background:var(--surface);border:1px solid var(--border);border-radius:12px;
 padding:4px 16px;margin:.9em 0 1.4em}
 """
 
@@ -117,21 +114,12 @@ def _render_body(md: str) -> list[str]:
 
 
 def render_review_page(md: str, *, date: str) -> str:
-    """Review markdown → a single self-contained noindex HTML page (phone-first). Pure."""
+    """Review markdown → a single self-contained noindex HTML page (phone-first). Pure.
+    Wears the same design system (chrome/tokens) as the day/hub pages."""
     body = "\n".join(_render_body(md))
-    title = _html.escape(f"Agent Radar 周报 · {date}")
-    return (
-        "<!doctype html>\n"
-        '<html lang="zh-CN">\n<head>\n'
-        '<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        '<meta name="robots" content="noindex, nofollow">\n'
-        f"<title>{title}</title>\n"
-        f"<style>{_CSS}{_EXTRA_CSS}</style>\n"
-        "</head>\n<body>\n<main>\n"
-        f"{body}\n"
-        "</main>\n</body>\n</html>\n"
-    )
+    return page_shell(title=f"Agent Radar 周报 · {date}", body=body,
+                      extra_css=READER_CSS + _EXTRA_CSS,
+                      foot_note=f"周报 · {date} · 只草案不自动应用")
 
 
 def publish_review(md: str, *, date: str, config: RadarConfig,

@@ -163,6 +163,16 @@ def run_listener(config: Optional[RadarConfig] = None) -> int:
 
     os.environ.pop("ANTHROPIC_API_KEY", None)   # serve never calls the LLM
 
+    # Reading-page votes: poll the site's same-origin /votes into the SAME feedback store
+    # (daemon thread; silently off unless web_reader + AGENT_RADAR_WEB_SECRET are configured).
+    wr = config.channels.web_reader
+    if wr is not None:
+        try:
+            from .webvotes import start_poller
+            start_poller(base_url=wr.resolved().get("base_url") or "", log=log)
+        except Exception as e:  # noqa: BLE001 — the poller must never block the card listener
+            log.warn("web-vote poller failed to start", error=repr(e)[:120])
+
     credential = dingtalk_stream.Credential(creds["client_id"], creds["client_secret"])
     client = dingtalk_stream.DingTalkStreamClient(credential)
 

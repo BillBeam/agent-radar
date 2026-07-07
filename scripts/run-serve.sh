@@ -5,6 +5,9 @@ set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"      # → repo root
 
 [ -f .env ] && { set -a; . ./.env; set +a; }              # DingTalk creds (DINGTALK_*)
+# The web-vote poller (pages.dev) may need the proxy the Stream conn must NOT use —
+# preserve it under a dedicated name BEFORE stripping; only radar/serve/webvotes.py reads it.
+[ -n "${HTTPS_PROXY:-}" ] && export AGENT_RADAR_WEB_PROXY="$HTTPS_PROXY"
 # Strip every proxy var AFTER sourcing .env (the long-lived Stream conn cannot go via a
 # Western proxy), and the subscription key.
 unset ANTHROPIC_API_KEY HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
