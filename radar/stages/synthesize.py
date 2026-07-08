@@ -109,7 +109,8 @@ def _health_line(ctx: RunContext) -> str:
         return f"> ⚠️ **抓取大面积失败：0/{total} 源成功** —— 不是没料，是网络/代理挂了，请跑 `radar doctor`。\n"
     if failed:
         more = "…" if len(failed) > 6 else ""
-        return f"> ⚠️ 今天 {live}/{total} 源成功，失败：{', '.join(failed[:6])}{more}\n"
+        return (f"> ⚠️ 今天 {live}/{total} 源成功，失败：{', '.join(failed[:6])}{more}"
+                f"——缺口不丢，该源恢复后自动补课。\n")
     return ""
 
 
@@ -150,10 +151,15 @@ class SynthesizeStage(Stage):
         counts = f"今日新增 {len(fresh)}" + (f" · 首次收录 {len(backfill)}" if backfill else "")
         degraded = ("> ⚠️ 本日排序降级：rerank 未成功（LLM 超时/失败），条目顺序为粗筛分数序、个性化未生效。\n"
                     if ctx.stats.get("rerank_degraded") else "")
+        # Thin-delivery note (07-08「为什么只有9篇」): fewer than the cap means fewer items
+        # cleared the quality gate — say so, so a short day never reads as a broken funnel.
+        cap = ctx.config.max_items(ctx.mode)
+        thin = (f"> 入选 {len(items)}/{cap}：过质量门的只有这些——宁缺毋滥，不凑数。\n"
+                if len(items) < cap else "")
         header = (f"# Agent Radar · {date}（{weekday}）\n\n"
                   f"> 扫描 {len(ctx.sources)} 源 · 候选 {funnel.get('candidates', 0)} · "
                   f"{counts} · 跳过已读 {ctx.stats.get('skipped_seen', 0)}\n"
-                  + _health_line(ctx) + degraded)
+                  + _health_line(ctx) + thin + degraded)
 
         tldr = _tldr(ctx, ordered)
         tldr_block = f"\n## 🎯 {title_kind} TL;DR\n\n{tldr}\n" if tldr else ""

@@ -275,8 +275,32 @@ def test_health_line():
     assert "大面积失败" in _health_line(ctx)
     ctx.stats["fetch_health"] = {"live": 26, "total": 28, "failed": ["a", "b"]}
     assert "26/28" in _health_line(ctx)
+    # 07-08: the failure line must also reassure — the gap backfills, nothing is lost.
+    assert "补课" in _health_line(ctx)
     ctx.stats["fetch_health"] = {"live": 28, "total": 28, "failed": []}
     assert _health_line(ctx) == ""
+
+
+def test_synthesize_thin_delivery_note(tmp_path, monkeypatch):
+    """07-08「为什么只有9篇」: fewer items than the cap must self-explain in the header
+    (宁缺毋滥 is by design, not a broken funnel) — and a full day must NOT show the note."""
+    import radar.stages.synthesize as S
+    monkeypatch.setattr(S.Paths, "digests", tmp_path)
+    ctx = _ctx()
+    ctx.llm = None
+    ctx.sources = []
+    ctx.items = [_item(title=f"t{i}", score=9) for i in range(2)]   # 2 < daily cap (10)
+    S.SynthesizeStage().run(ctx)
+    assert f"入选 2/{ctx.config.daily_max_items}" in ctx.digest.markdown
+    assert "宁缺毋滥" in ctx.digest.markdown
+
+    ctx2 = _ctx()
+    ctx2.llm = None
+    ctx2.sources = []
+    ctx2.config.daily_max_items = 2                                  # full house → no note
+    ctx2.items = [_item(title=f"t{i}", score=9) for i in range(2)]
+    S.SynthesizeStage().run(ctx2)
+    assert "宁缺毋滥" not in ctx2.digest.markdown
 
 
 def test_write_last_run(tmp_path, monkeypatch):

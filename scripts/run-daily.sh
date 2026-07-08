@@ -36,6 +36,12 @@ done
 
 # caffeinate: once the run starts, don't let idle/system sleep chop it into dark-wake
 # fragments mid-pipeline (07-07: fetch was sliced across 4 wake windows). No-op off macOS.
+# ⚠️ On BATTERY caffeinate -s is a documented no-op: closed-lid maintenance sleep still
+# slices the run (07-08: fetch stretched 08:42→10:47 until the lid opened). Software
+# cannot override that — leave a loud marker so a slow run self-diagnoses from this log.
+if command -v pmset >/dev/null 2>&1 && pmset -g batt | grep -q "Battery Power"; then
+  echo "[run-daily] ⚠️ ON BATTERY — sleep can slice this run; plug in AC for reliable unattended runs" >&2
+fi
 CAFF=""; command -v caffeinate >/dev/null 2>&1 && CAFF="caffeinate -is"
 $CAFF "$PY" -m radar --mode daily          # set -e: daily's failure exits here with its rc (eval skipped)
 
