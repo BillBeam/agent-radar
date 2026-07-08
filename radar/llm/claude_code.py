@@ -26,7 +26,10 @@ from ..core.ports import LLMClient, LLMResult
 from ..core.registry import register
 from ._json import extract_json
 
-_OVERLOAD_MARKERS = ("overloaded", "rate", "429", "529", "529 ")
+_OVERLOAD_MARKERS = ("overloaded", "rate", "429", "529", "529 ",
+                     # genuine mid-stream server FINs (claude-code#67766 et al.) — retry-worthy.
+                     # Visible to us since 07-08 (failure diag now includes CLI stdout).
+                     "connection closed", "internal server")
 
 # claude -p auto-loads CLAUDE.md from its cwd AND every ancestor directory into model
 # context — `--system-prompt` does NOT suppress that. Run from inside the repo, and every
@@ -47,7 +50,12 @@ class ClaudeCodeLLM(LLMClient):
         self.config = config
         self.log = log
         self.trace = trace   # optional Tracer → per-LLM-call events (set by the runner)
-        self.bin = shutil.which("claude") or "claude"
+        # AGENT_RADAR_CLAUDE_BIN (.env, machine-local) pins the pipeline to a known-good
+        # CLI build, decoupled from brew/interactive upgrades. Born 07-08: brew bumped the
+        # CLI to 2.1.204 mid-day and its new request shape left big-payload opus calls
+        # byte-silent >300s (server never streams) → watchdog kill → 9/9 deepreads dead;
+        # the pre-update CLI on the SAME payloads streamed instantly all morning.
+        self.bin = os.environ.get("AGENT_RADAR_CLAUDE_BIN") or shutil.which("claude") or "claude"
         # cumulative token usage across the run (read by runner for last_run.json)
         self.usage_total = {"calls": 0, "input": 0, "output": 0,
                             "cache_read": 0, "cache_creation": 0}
@@ -106,6 +114,15 @@ class ClaudeCodeLLM(LLMClient):
             cmd += ["--system-prompt", system]
         env = dict(os.environ)
         env.pop("ANTHROPIC_API_KEY", None)  # force subscription, never API billing
+        # CLI 2.1.204's byte watchdog aborts at 300s of stream silence — and heavy prompts
+        # (80K grounding) leave opus silent PAST that before its first byte → "API Error:
+        # Connection closed mid-response" (string lives in the CLI binary; killed all 9
+        # fresh deepreads on 07-08). Var names verified via `strings` on the binary —
+        # docs/blogs circulate a wrong name without BYTE_. Align both knobs with OUR call
+        # timeout so this wrapper stays the single deadline owner.
+        env["CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS"] = str(int(timeout * 1000))
+        env["API_TIMEOUT_MS"] = str(int(timeout * 1000))
+        env["DISABLE_AUTOUPDATER"] = "1"   # a pinned binary must never self-update mid-run
         _NEUTRAL_CWD.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
             cmd, input=prompt, capture_output=True, text=True,
@@ -113,7 +130,11 @@ class ClaudeCodeLLM(LLMClient):
             cwd=str(_NEUTRAL_CWD),   # no CLAUDE.md in this dir or any ancestor (see above)
         )
         if proc.returncode != 0:
-            return False, f"exit {proc.returncode}: {(proc.stderr or '')[:240]}", None
+            # The CLI often puts the real diagnostic on STDOUT (json envelope subtype:
+            # max_turns / usage-limit text) and exits with EMPTY stderr — dropping stdout
+            # here left 07-08's 9-item deepread wipeout as an undiagnosable `exit 1: `.
+            diag = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+            return False, f"exit {proc.returncode}: {diag[:240]}", None
         try:
             data = json.loads(proc.stdout)
         except json.JSONDecodeError:

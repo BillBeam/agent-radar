@@ -511,6 +511,70 @@ def test_llm_subprocess_disables_all_tools(monkeypatch):
     assert "--max-turns" in cmd and cmd[cmd.index("--max-turns") + 1] == "1"
 
 
+def test_llm_stream_watchdog_aligned_with_call_timeout(monkeypatch):
+    """CLI ≥2.1.204's 300s stream-idle watchdog fires BEFORE first byte on heavy prompts
+    (opus TTFT >5min on 80K grounding) — 'Connection closed mid-response' killed all 9
+    fresh deepreads on 07-08. The wrapper must own the deadline: watchdog = call timeout."""
+    import radar.llm.claude_code as CC
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+
+        class P:
+            returncode = 0
+            stdout = '{"result": "ok"}'
+            stderr = ""
+        return P()
+
+    monkeypatch.setattr(CC.subprocess, "run", fake_run)
+    llm = CC.ClaudeCodeLLM(config=None, log=None)
+    assert llm.complete("x", tag="t", timeout=1200).ok
+    # real knob names verified via `strings` on the 2.1.204 binary (docs circulate a
+    # wrong name without BYTE_ — that one is ignored and the 300s default still fires)
+    assert seen["env"]["CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS"] == "1200000"
+    assert seen["env"]["API_TIMEOUT_MS"] == "1200000"
+    assert seen["env"]["DISABLE_AUTOUPDATER"] == "1"
+
+
+def test_llm_bin_pinnable_via_env(monkeypatch):
+    """AGENT_RADAR_CLAUDE_BIN pins the pipeline CLI to a known-good build — brew bumped
+    the CLI mid-day on 07-08 and the new build's request shape killed every big-payload
+    opus call; production must not ride whatever binary PATH happens to serve today."""
+    import radar.llm.claude_code as CC
+    monkeypatch.setenv("AGENT_RADAR_CLAUDE_BIN", "/pinned/claude-2.1.201")
+    llm = CC.ClaudeCodeLLM(config=None, log=None)
+    assert llm.bin == "/pinned/claude-2.1.201"
+    monkeypatch.delenv("AGENT_RADAR_CLAUDE_BIN")
+    llm2 = CC.ClaudeCodeLLM(config=None, log=None)
+    assert llm2.bin.endswith("claude")            # unset → normal PATH resolution
+
+
+def test_llm_failure_diag_from_stdout_and_transient_class(monkeypatch):
+    """rc≠0 with EMPTY stderr must surface the CLI's stdout diagnostic (json envelope) —
+    dropping it left 07-08 as an undiagnosable `exit 1: ` for 90 minutes. And genuine
+    mid-stream FINs ('Connection closed mid-response') must classify as transient/retry."""
+    import radar.llm.claude_code as CC
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        calls["n"] += 1
+
+        class P:
+            returncode = 1
+            stdout = '{"is_error":true,"result":"API Error: Connection closed mid-response."}'
+            stderr = ""
+        return P()
+
+    monkeypatch.setattr(CC.subprocess, "run", fake_run)
+    monkeypatch.setattr(CC.time, "sleep", lambda s: None)
+    llm = CC.ClaudeCodeLLM(config=None, log=None)
+    res = llm.complete("x", tag="t", retries=2)
+    assert not res.ok
+    assert "Connection closed mid-response" in (res.error or "")   # stdout diag surfaced
+    assert calls["n"] == 2                                          # transient → retried
+
+
 # ---- chunked triage (07-07: one 219-item haiku call timed out ×3 → whole-pool degrade) ----
 def test_triage_chunks_with_global_indices(monkeypatch):
     import radar.stages.triage as T
