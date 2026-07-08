@@ -14,8 +14,9 @@
   <key>WorkingDirectory</key><string>__REPO__</string>
   <key>StartCalendarInterval</key>
   <dict>
+    <!-- 2026-07-08 迁移：本机 America/Los_Angeles，周日 06:00 = 上海周日 21:00（夏令时；冬季顺延 1h） -->
     <key>Weekday</key><integer>0</integer>
-    <key>Hour</key><integer>21</integer>
+    <key>Hour</key><integer>6</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
   <key>RunAtLoad</key><false/>

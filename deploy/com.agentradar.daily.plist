@@ -13,7 +13,8 @@
   <key>WorkingDirectory</key><string>__REPO__</string>
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Hour</key><integer>8</integer>
+    <!-- 2026-07-08 迁移：本机 America/Los_Angeles，17:30 = 上海次日 08:30（夏令时；冬季顺延 1h） -->
+    <key>Hour</key><integer>17</integer>
     <key>Minute</key><integer>30</integer>
   </dict>
   <key>RunAtLoad</key><false/>
