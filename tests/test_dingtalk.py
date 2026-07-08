@@ -301,3 +301,21 @@ def test_dingtalk_file_suppressed_when_web_reader_on():
     both = RadarConfig(channels=ChannelsConfig(dingtalk_card=DingtalkCardConfig(),
                                                web_reader=WebReaderConfig(project_name="p")))
     assert DingtalkFileChannel().is_enabled(both) is False                     # web reading page supersedes docx file
+
+
+def test_build_list_request_versioned_out_track(monkeypatch):
+    """digest_version>1 → outTrackId 带 :v{n} 后缀（钉钉复用 outTrackId 会静默忽略新数据——
+    07-08 迁移日两机同天投递的碰撞）；v1 保持旧形态零变化；回调解析只取首段 → date 不受影响。"""
+    from radar.channels.dingtalk_card import build_list_request
+    from radar.serve.listener import parse_card_callback
+    monkeypatch.delenv("DINGTALK_OUTTRACK_NONCE", raising=False)
+    creds = {"card_template_id": "t", "user_id": "U", "robot_code": "R"}
+    assert build_list_request("2026-07-08", [], creds)["outTrackId"] == "2026-07-08:list"
+    assert build_list_request("2026-07-08", [], creds, version=1)["outTrackId"] == "2026-07-08:list"
+    assert build_list_request("2026-07-08", [], creds, version=2)["outTrackId"] == "2026-07-08:list:v2"
+    monkeypatch.setenv("DINGTALK_OUTTRACK_NONCE", "n1")      # nonce 仍可叠加在版本之后
+    assert build_list_request("2026-07-08", [], creds, version=3)["outTrackId"] == "2026-07-08:list:v3:n1"
+    cb = parse_card_callback({
+        "outTrackId": "2026-07-08:list:v2", "userId": "U1",
+        "content": json.dumps({"cardPrivateData": {"actionIds": ["up_abc123"]}})})
+    assert cb == {"date": "2026-07-08", "item_id": "abc123", "vote": "up", "user_id": "U1"}

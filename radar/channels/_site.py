@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 
 from ..core.config import Paths
 from ..core.io import atomic_write_text
+from ..core.versioning import archived_md, load_versions
 from ._design import page_shell
 from ._site_stats import collect_stats, list_item_dates, read_items, render_stats_page
 from ._web_render import render_day_page
@@ -48,6 +49,32 @@ def _archive_md(date: str) -> Optional[str]:
         return None
     md = p.read_text(encoding="utf-8")
     return md.split(_EVAL_BOX)[0].rstrip() + "\n"
+
+
+def _after_h1(md: str, line: str) -> str:
+    """Insert `line` right after the md's first line (the h1) — the renderer's line parser
+    already expects blockquotes there (the header block), so this is zero-risk placement."""
+    nl = md.find("\n")
+    return md if nl < 0 else md[: nl + 1] + "\n" + line + md[nl + 1:]
+
+
+def _version_note(vers: list[dict]) -> str:
+    """One honest line atop the LATEST page when a day was pushed more than once. Archived
+    versions link to their v{k}/ subpage (relative — resolves inside the same day seg);
+    lost ones (tombstones) are listed without a link, with their note."""
+    cur = max(int(e.get("v", 1)) for e in vers)
+    parts = []
+    for e in sorted(vers, key=lambda x: int(x.get("v", 1))):
+        v = int(e.get("v", 1))
+        n = e.get("n_items")
+        n_txt = f"{n} 篇" if n is not None else "篇数不详"
+        if v == cur:
+            parts.append(f"v{v}·当前（{n_txt}）")
+        elif e.get("lost"):
+            parts.append(f"v{v}（{n_txt}·{e.get('note') or '数据未存档'}）")
+        else:
+            parts.append(f"[v{v}（{n_txt}）](v{v}/)")
+    return f"> 📜 本日推送过 {cur} 个版本：{' · '.join(parts)}。历史版仅存档、不参与投票。\n"
 
 
 def _leak_gate(html: str, name: str, log: Any = None) -> bool:
@@ -227,14 +254,36 @@ def build_site(secret: str, *,
         prev_d = clean_days[i - 1] if i > 0 else None
         next_d = clean_days[i + 1] if i + 1 < len(clean_days) else None
         items = items_by_date[d]
+        vers = load_versions(d)
+        md_d = md_map[d]
+        if len(vers) > 1:                       # same-day multi-version → honest note up top
+            md_d = _after_h1(md_d, _version_note(vers))
         html = render_day_page(
-            md_map[d], date=d, mermaid_svg=mermaid, nav=nav,
+            md_d, date=d, mermaid_svg=mermaid, nav=nav,
             prev_day=(day_urls[prev_d], prev_d) if prev_d else None,
             next_day=(day_urls[next_d], next_d) if next_d else None,
             vote_api=vote_api,
             item_ids={str(j + 1): it["id"] for j, it in enumerate(items) if it.get("id")} or None,
         )
-        _emit(day_urls[d].strip("/"), html, f"day:{d}")
+        if not _emit(day_urls[d].strip("/"), html, f"day:{d}"):
+            continue                            # gated day publishes no versions either
+        # -- archived version subpages: {seg}/v{k}/ — same capability envelope as the day
+        #    seg, read-only (no vote UI), each still through the leak gate. A gated/absent
+        #    version page is removed so a stale copy can't keep republishing.
+        cur_v = max((int(e.get("v", 1)) for e in vers), default=1)
+        for e in vers:
+            v = int(e.get("v", 1))
+            vdir = site / day_urls[d].strip("/") / f"v{v}"
+            if v == cur_v or e.get("lost"):
+                continue
+            vmd = archived_md(d, v)
+            if not vmd:
+                continue
+            vmd = vmd.split(_EVAL_BOX)[0].rstrip() + "\n"
+            vmd = _after_h1(vmd, f"> ⚠️ 历史版本 v{v}（已被 v{cur_v} 取代，仅存档）· [回到当前版](../)\n")
+            vhtml = render_day_page(vmd, date=d, mermaid_svg=mermaid, nav=nav)
+            if not _emit(f"{day_urls[d].strip('/')}/v{v}", vhtml, f"day:{d}:v{v}") and vdir.exists():
+                shutil.rmtree(vdir, ignore_errors=True)
 
     # A day that did NOT make it this run must not linger from an older build — the whole
     # dir redeploys as a snapshot, so a stale file would keep re-publishing gated content.

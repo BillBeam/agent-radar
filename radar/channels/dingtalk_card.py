@@ -95,13 +95,18 @@ def build_items(digest: Digest, ctx: RunContext | None = None) -> list[dict]:
     return rows
 
 
-def build_list_request(date: str, rows: list[dict], creds: dict) -> dict:
+def build_list_request(date: str, rows: list[dict], creds: dict, version: int = 1) -> dict:
     """Body for /v1.0/card/instances/createAndDeliver — ONE list card. cardParamMap.items is the
     JSON-string of the rows (loopArray). outTrackId={date}:list (the whole digest = one card; the
-    per-row id comes from the clicked button's actionId, not outTrackId). Optional nonce forces a
-    fresh instance for re-delivery/testing."""
+    per-row id comes from the clicked button's actionId, not outTrackId). A same-day NEW VERSION
+    (digest_version>1) suffixes `:v{n}` — DingTalk silently ignores cardData on a reused
+    outTrackId, so without this a second version would show the FIRST version's rows (07-08
+    migration-day collision). parse_card_callback only reads the first segment ⇒ date unaffected.
+    Optional nonce still composes after, for manual re-delivery/testing."""
     uid = creds["user_id"]
     out_track = f"{date}:list"
+    if version > 1:
+        out_track += f":v{version}"
     nonce = os.getenv("DINGTALK_OUTTRACK_NONCE")
     if nonce:
         out_track += f":{nonce}"
@@ -150,8 +155,9 @@ class DingtalkCardChannel(Channel):
             return False
 
         # Reading is folded into each card row (title + reason + ⚠️) → ONE message, no separate brief.
-        ok = self._deliver(session, token, creds, digest.date, rows, ctx)
-        ctx.log.info("dingtalk_card list delivered", rows=len(rows), ok=ok)
+        version = int(ctx.stats.get("digest_version") or 1)
+        ok = self._deliver(session, token, creds, digest.date, rows, ctx, version)
+        ctx.log.info("dingtalk_card list delivered", rows=len(rows), ok=ok, version=version)
         return ok
 
     def _token(self, session: requests.Session, creds: dict) -> str:
@@ -160,9 +166,9 @@ class DingtalkCardChannel(Channel):
         r.raise_for_status()
         return r.json()["accessToken"]
 
-    def _deliver(self, session, token, creds, date, rows, ctx) -> bool:
+    def _deliver(self, session, token, creds, date, rows, ctx, version: int = 1) -> bool:
         try:
-            r = session.post(_SEND_URL, json=build_list_request(date, rows, creds), timeout=20,
+            r = session.post(_SEND_URL, json=build_list_request(date, rows, creds, version), timeout=20,
                              headers={"x-acs-dingtalk-access-token": token,
                                       "Content-Type": "application/json"})
             data = r.json() if r.content else {}

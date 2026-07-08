@@ -214,3 +214,32 @@ def test_font_loading_is_async_with_system_fallback():
     assert 'media="print" onload="this.media=\'all\'"' in h    # can never block render
     assert "PingFang SC" in h and "system-ui" in h             # CJK/system stack always present
     assert "fonts.googleapis.com" in h
+
+
+def test_day_version_history_note_and_subpages(tmp_path, monkeypatch):
+    """同一天多版本：最新页顶部出版本注记（墓碑如实列出不给链接）；归档版出 {seg}/v{k}/
+    只读子页；lost 版不出页。"""
+    site = _seed(tmp_path, monkeypatch, days=("2026-07-06",))
+    d = "2026-07-06"
+    digests = tmp_path / "digests"
+    (digests / f"{d}.v1.items.json").write_text(
+        json.dumps([{"id": "old1", "title": "Old Paper"}]), encoding="utf-8")
+    (digests / d[:4] / d[5:7] / f"{d}.v1.md").write_text(
+        f"# Agent Radar · {d}\n### [1] 旧版正文\n早期版本。\n", encoding="utf-8")
+    (digests / f"{d}.versions.json").write_text(json.dumps([
+        {"v": 1, "ts": "t", "n_items": 1},
+        {"v": 2, "ts": "t", "n_items": 10, "lost": True, "note": "数据未随迁移包"},
+        {"v": 3, "ts": "t", "n_items": 3},
+    ]), encoding="utf-8")
+    res = S.build_site(SECRET, site_dir=site)
+    from radar.channels.web_reader import _seg
+    day = (site / _seg(SECRET, d) / "index.html").read_text(encoding="utf-8")
+    assert "本日推送过 3 个版本" in day
+    assert "v1（1 篇）" in day and 'href="v1/"' in day        # 归档版可点
+    assert "数据未随迁移包" in day                              # 墓碑如实说明
+    v1 = site / _seg(SECRET, d) / "v1" / "index.html"
+    assert v1.exists()
+    v1_html = v1.read_text(encoding="utf-8")
+    assert "历史版本 v1" in v1_html and "旧版正文" in v1_html
+    assert not (site / _seg(SECRET, d) / "v2").exists()        # lost → 无页面
+    assert f"day:{d}:v1" in res["built"]

@@ -16,6 +16,7 @@ from ..core.models import Digest, Item, RunContext, is_display_fresh
 from ..core.ports import Stage
 from ..core.registry import register
 from ..core.text import demote_headings, smart_truncate, strip_trailing_date
+from ..core.versioning import archive_if_new
 from .critic import critic_verdict
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -203,8 +204,15 @@ class SynthesizeStage(Stage):
         )
         # persist in CANONICAL display order so {date}.items.json[N-1] == digest item [N]
         # == `radar mark <date> N`. This alignment is the whole point of the order above.
+        # Same-day re-runs with a DIFFERENT item set are a new VERSION: the previous
+        # items.json/archive md are suffixed .v{k} first (never silently clobbered), and the
+        # version number rides ctx.stats so the card gets a fresh outTrackId (DingTalk ignores
+        # cardData on a reused one — the 07-08 migration-day collision).
+        ver = archive_if_new(date, [it.id for it in ordered], run_id=ctx.run_id, log=ctx.log)
+        ctx.stats["digest_version"] = ver
         atomic_write_json(Paths.digests / f"{date}.items.json",
                           [it.model_dump(mode="json") for it in ordered])
         ctx.log.info("synthesized", full_chars=len(ctx.digest.markdown),
                      brief_chars=len(ctx.digest.markdown_brief),
-                     fresh=len(fresh), backfill=len(backfill), tldr=bool(tldr))
+                     fresh=len(fresh), backfill=len(backfill), tldr=bool(tldr),
+                     version=ver)

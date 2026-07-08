@@ -77,6 +77,7 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 - **`Digest`**：成品。`markdown`(完整详解→本地) + `markdown_brief`(精简→钉钉) + `items` + `stats`。
 - **`RunContext`**：每次运行的可变状态，串起整条管线，注入服务（`llm`/`memory`/`log`/`trace`）。
 - **`TimeWindow`**：新鲜度窗口（daily 48h，papers 96h；dedup 保证不重推，故窗口可宽）。
+- **同日多版本工件（2026-07-08）**：`data/digests/{date}.items.json` + 归档 md 永远指向**当前版**；同日重投且 item id 序变化时，旧版先改名 `{date}.v{k}.*` 存档、`{date}.versions.json`（append-only，含 lost 墓碑=投递过但数据不可得）登记后再写新版——重跑不清史，deepread 按 item checkpoint 跨版本复用不重付。
 
 ## 6. 组件现状（ports-and-adapters）
 
@@ -108,9 +109,9 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 产出两个渲染：`markdown`(完整详解，落本地) + `markdown_brief`(精简：TL;DR + 每条标题/链接/一句话精华/标签)。结构确定性拼装，LLM 只写 TL;DR。持久化 `{date}.items.json` 供重渲染（不重跑 opus）。
 
 ### 6.7 Channels（`radar/channels/`）+ Deliver（`radar/stages/deliver.py`）— ✅
-- 四渠道全自动：`web_reader`(CF Pages 阅读站，见下) → `dingtalk_card`(1v1 互动列表卡，每行 👍/👎 → Stream 回调写 feedback) → `local`(完整版 md 归档 + latest.md + index.md，always-on) → `macos`(osascript 通知)。旧 `dingtalk` 群 webhook 已停用（保留代码作回退）。
+- 四渠道全自动：`web_reader`(CF Pages 阅读站，见下) → `dingtalk_card`(1v1 互动列表卡，每行 👍/👎 → Stream 回调写 feedback)（同日新版本 outTrackId 加 `:v{n}` 后缀——钉钉对复用 outTrackId 静默忽略新数据） → `local`(完整版 md 归档 + latest.md + index.md，always-on) → `macos`(osascript 通知)。旧 `dingtalk` 群 webhook 已停用（保留代码作回退）。
 - deliver 迭代启用渠道、**隔离失败**、投递后才标记 `seen.json`（防重推）。
-- **Web 情报台（2026-07-07，`_design.py`/`_site.py`/`_site_stats.py`）**：web_reader 每跑幂等重建整站——每日详解页（目录+锚点+上一天/下一天）+ **主页 HUB**（今日头条+三入口，seg=HMAC(secret,"home")，唯一需要收藏的 URL）+ **归档台**（"index"，倒序每天 `[N]` 标题+一句话洞察直达锚点）+ **数据统计**（"stats"，构建时聚合：反馈画像/忠实度趋势/每日构成/主题热力/系统健康，内联 SVG 零 JS 零后端）。统一设计系统（克制高级、light/dark、字体异步加载系统栈兜底）；**每页写盘前过 leak 闸**（命中=跳过该页）；站点根维持 404、全站 noindex。
+- **Web 情报台（2026-07-07，`_design.py`/`_site.py`/`_site_stats.py`）**：web_reader 每跑幂等重建整站——每日详解页（目录+锚点+上一天/下一天）+ **主页 HUB**（今日头条+三入口，seg=HMAC(secret,"home")，唯一需要收藏的 URL）+ **归档台**（"index"，倒序每天 `[N]` 标题+一句话洞察直达锚点）+ **数据统计**（"stats"，构建时聚合：反馈画像/忠实度趋势/每日构成/主题热力/系统健康，内联 SVG 零 JS 零后端）。统一设计系统（克制高级、light/dark、字体异步加载系统栈兜底）；**每页写盘前过 leak 闸**（命中=跳过该页）；站点根维持 404、全站 noindex。 同日多版本：最新页顶部版本注记（含 lost 墓碑如实列出），历史版出 `{seg}/v{k}/` 只读子页（同能力信封、过同一 leak 闸、不参与投票）。
 - **网页投票（同源）**：站点随部署携带 Pages `_worker.js`——`POST /vote`（页面 seg 即能力令牌，worker 以 WEB_SECRET 重算 HMAC 校验）+ `GET /votes`（独立派生 bearer）；`radar --mode serve` 内置轮询线程把票并进 `record_feedback`（与 `radar mark`/钉钉卡逐键一致，last-wins）。钉钉卡与网页**双通道**并存；KV 未绑定时页面投票钮不渲染、其余零影响。
 
 ### 6.8 LLM 后端（`radar/llm/claude_code.py`）— ✅
