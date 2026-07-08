@@ -112,3 +112,50 @@ def test_send_disabled_when_secret_absent(monkeypatch, tmp_path):
     monkeypatch.delenv("AGENT_RADAR_WEB_SECRET", raising=False)         # no secret → missing() blocks it
     ok = WebReaderChannel().send(Digest(date="2026-06-30", items=[], markdown="# x"), _ctx(_enabled()))
     assert ok is False
+
+
+def test_deploy_strips_ambient_proxy_env(monkeypatch):
+    """部署子进程必须剥掉环境代理——07-08 实测付费代理拖死 wrangler 上传（300s 超时），直连秒过；
+    钉钉方向的「必须不走代理」在 CF 这里是「默认直连」。"""
+    from radar.channels import web_reader as W
+    monkeypatch.setenv("HTTPS_PROXY", "http://paid.example:1")
+    monkeypatch.setenv("HTTP_PROXY", "http://paid.example:1")
+    monkeypatch.delenv("AGENT_RADAR_DEPLOY_PROXY", raising=False)
+    captured = {}
+
+    class _P:
+        returncode, stdout, stderr = 0, "", ""
+
+    def _run(argv, **kw):
+        captured["env"] = kw.get("env")
+        return _P()
+
+    monkeypatch.setattr(W.shutil, "which", lambda _: "/usr/bin/npx")
+    monkeypatch.setattr(W.subprocess, "run", _run)
+    ok, detail = W.deploy_site("agent-radar")
+    assert ok is True and detail == "deployed"
+    env = captured["env"]
+    assert env is not None
+    assert "HTTP_PROXY" not in env and "HTTPS_PROXY" not in env and "ALL_PROXY" not in env
+
+
+def test_deploy_proxy_override_escape_hatch(monkeypatch):
+    """AGENT_RADAR_DEPLOY_PROXY（如本机 7897）只作用于部署子进程——未来回到需代理的网络时的开关。"""
+    from radar.channels import web_reader as W
+    monkeypatch.setenv("HTTPS_PROXY", "http://paid.example:1")
+    monkeypatch.setenv("AGENT_RADAR_DEPLOY_PROXY", "http://127.0.0.1:7897")
+    captured = {}
+
+    class _P:
+        returncode, stdout, stderr = 0, "", ""
+
+    def _run(argv, **kw):
+        captured["env"] = kw.get("env")
+        return _P()
+
+    monkeypatch.setattr(W.shutil, "which", lambda _: "/usr/bin/npx")
+    monkeypatch.setattr(W.subprocess, "run", _run)
+    ok, _ = W.deploy_site("agent-radar")
+    assert ok is True
+    assert captured["env"]["HTTPS_PROXY"] == "http://127.0.0.1:7897"
+    assert captured["env"]["HTTP_PROXY"] == "http://127.0.0.1:7897"

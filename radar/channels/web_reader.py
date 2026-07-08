@@ -44,10 +44,24 @@ def _seg(secret: str, date: str) -> str:
     return hmac.new(secret.encode(), date.encode(), hashlib.sha256).hexdigest()[:32]
 
 
+def _deploy_env() -> dict:
+    """wrangler's env: ambient proxies STRIPPED — the fetch proxy in .env killed the upload
+    (2026-07-08: 300s timeout via the paid proxy; direct finished in seconds), and unlike the
+    domestic DingTalk direction CF is reachable直连 from any network we run on. If a future
+    network really needs one, `AGENT_RADAR_DEPLOY_PROXY` (e.g. a local 7897) applies to the
+    deploy subprocess ONLY — mirrors run-serve.sh's AGENT_RADAR_WEB_PROXY escape hatch."""
+    env = {k: v for k, v in os.environ.items()
+           if k.upper() not in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")}
+    override = os.environ.get("AGENT_RADAR_DEPLOY_PROXY")
+    if override:
+        env["HTTPS_PROXY"] = env["HTTP_PROXY"] = override
+    return env
+
+
 def deploy_site(project: str) -> tuple[bool, str]:
     """One `npx wrangler pages deploy` of the whole data/web/site dir → the project's PRODUCTION
     alias (--branch main = the production branch set at create; a repo on `master` would otherwise
-    land on a Preview alias — the 404 lesson). CF creds are read by wrangler from the inherited env
+    land on a Preview alias — the 404 lesson). CF creds are read by wrangler from the passed env
     (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID) — never on argv, never logged.
     Shared by the daily channel and the weekly-review publisher; returns (ok, detail)."""
     npx = shutil.which("npx")
@@ -58,6 +72,7 @@ def deploy_site(project: str) -> tuple[bool, str]:
             [npx, "-y", "wrangler", "pages", "deploy", str(Paths.web / "site"),
              "--project-name", project, "--branch", "main", "--commit-dirty=true"],
             cwd=str(Paths.root), capture_output=True, text=True, timeout=_DEPLOY_TIMEOUT,
+            env=_deploy_env(),
         )
     except Exception as e:  # noqa: BLE001 — timeout / OSError
         return False, repr(e)[:160]
