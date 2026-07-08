@@ -80,8 +80,11 @@ class TriageStage(Stage):
                 f"Score these {len(chunk)} candidates per the rubric. Return ONLY the JSON array.\n\n"
                 + "\n".join(lines)
             )
+            # 一块(≤80条)正常就要 156–217s（两台机器实测一致），240s 默认值没有余量：
+            # 源机 07-07 三连超时=全池降级事故、07-08 迁移日再穿顶一次 → 对齐 7.3 rerank 的 480。
             data, res = ctx.llm.complete_json(user, system=system,
-                                              model=ctx.config.models.triage, tag=self.name)
+                                              model=ctx.config.models.triage,
+                                              timeout=480, tag=self.name)
             if not isinstance(data, list) or not data:
                 # one bad element shouldn't nuke the batch — salvage flat objects
                 salvaged = salvage_objects(res.text) if res.text else []

@@ -589,13 +589,16 @@ def test_triage_chunks_with_global_indices(monkeypatch):
             import re as _re
             idx = [int(m) for m in _re.findall(r"^\[(\d+)\]", prompt, _re.M)]
             calls.append(idx)
+            seen_kw.update(kw)
             from types import SimpleNamespace
             return ([{"i": i, "score": 9 - i, "reason": f"r{i}", "tags": []} for i in idx],
                     SimpleNamespace(text="[]", error=None))
 
+    seen_kw = {}
     ctx.llm = LLM()
     TriageStage().run(ctx)
     assert calls == [[0, 1], [2, 3], [4]]                    # 3 calls, GLOBAL indices
+    assert seen_kw.get("timeout") == 480   # 07-08: 块常态 156–217s，240 默认穿顶（同 rerank 7.3 先例）
     assert [it.score for it in ctx.items] == [9, 8, 7, 6, 5]  # every item scored by its chunk
     assert ctx.stats["triage_coverage"] == 1.0
     assert "triage_degraded" not in ctx.stats
