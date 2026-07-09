@@ -202,7 +202,9 @@ sources:
     name: Hacker News (agent/LLM, points-gated)
     category: community
     type: hackernews
-    url: https://hn.algolia.com/api/v1/search_by_date
+    # /search (custom ranking = points desc) + created_at_i window; the points gate is
+    # client-side since 2026-07-09 — Algolia stopped allowing numericFilters on `points`.
+    url: https://hn.algolia.com/api/v1/search
     weight: 0.9
     params:
       keywords: [AI agent, agentic, LLM agent, MCP, tool use, agent harness, coding agent]

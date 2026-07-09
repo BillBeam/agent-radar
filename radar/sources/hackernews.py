@@ -4,6 +4,15 @@ params:
   keywords:   ["AI agent","LLM","MCP","agentic","tool use",...]
   min_points: 80
   per_kw: 20
+
+2026-07-09: Algolia dropped `points` from the HN index's `numericAttributesForFiltering`, so
+`numericFilters=points>N` now 400s on BOTH /search and /search_by_date — every keyword failed
+and the source silently contributed 0 items (it swallows per-keyword errors by design). The
+points gate therefore moved client-side, and the recency gate moved server-side onto
+`created_at_i` (still filterable). `/search` replaces `/search_by_date` because the HN index's
+custom ranking is points-desc — within the window the top `per_kw` hits are the popular ones,
+which is what the gate wanted anyway. `search_by_date` would have handed back the newest 20
+stories (nearly all under the threshold) and the client-side gate would drop almost all of them.
 """
 from __future__ import annotations
 
@@ -14,7 +23,7 @@ from ..core.models import Item, Source, TimeWindow
 from ..core.registry import register
 from ._base import BaseSource
 
-API = "https://hn.algolia.com/api/v1/search_by_date"
+API = "https://hn.algolia.com/api/v1/search"
 DEFAULT_KEYWORDS = ["AI agent", "agentic", "LLM agent", "MCP", "tool use", "agent harness"]
 
 
@@ -33,11 +42,12 @@ class HackerNewsSource(BaseSource):
         kws = source.params.get("keywords", DEFAULT_KEYWORDS)
         min_points = int(source.params.get("min_points", 80))
         per_kw = int(source.params.get("per_kw", 20))
+        cutoff = int(window.cutoff.timestamp())      # server-side recency (created_at_i is filterable)
         by_url: dict[str, Item] = {}
         for kw in kws:
             qs = urlencode({
                 "query": kw, "tags": "story",
-                "numericFilters": f"points>{min_points}", "hitsPerPage": per_kw,
+                "numericFilters": f"created_at_i>{cutoff}", "hitsPerPage": per_kw,
             })
             try:
                 data = self.get_json(f"{API}?{qs}")
@@ -50,6 +60,8 @@ class HackerNewsSource(BaseSource):
                 url = h.get("url") or f"https://news.ycombinator.com/item?id={oid}"
                 title = h.get("title")
                 if not title:
+                    continue
+                if int(h.get("points") or 0) < min_points:   # the gate Algolia no longer applies
                     continue
                 when = _parse_dt(h.get("created_at", ""))
                 if not window.is_fresh(when):
