@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 
 from ..core.models import Item, Source, TimeWindow
 from ..core.registry import register
-from ._base import BaseSource
+from ._base import BaseSource, SourceError
 
 API = "https://hn.algolia.com/api/v1/search"
 DEFAULT_KEYWORDS = ["AI agent", "agentic", "LLM agent", "MCP", "tool use", "agent harness"]
@@ -44,6 +44,7 @@ class HackerNewsSource(BaseSource):
         per_kw = int(source.params.get("per_kw", 20))
         cutoff = int(window.cutoff.timestamp())      # server-side recency (created_at_i is filterable)
         by_url: dict[str, Item] = {}
+        failed = 0
         for kw in kws:
             qs = urlencode({
                 "query": kw, "tags": "story",
@@ -52,6 +53,7 @@ class HackerNewsSource(BaseSource):
             try:
                 data = self.get_json(f"{API}?{qs}")
             except Exception as e:  # noqa: BLE001 — one keyword failing shouldn't kill the source
+                failed += 1
                 if self.log:
                     self.log.warn("hn keyword failed", kw=kw, error=repr(e))
                 continue
@@ -70,4 +72,11 @@ class HackerNewsSource(BaseSource):
                     source=source, title=title, url=url, published_at=when,
                     summary=f"HN: {h.get('points', 0)} points · {h.get('num_comments', 0)} comments",
                 )
+        # Per-keyword tolerance must not hide a whole-source outage. When the Algolia contract
+        # broke on 2026-07-09 every keyword 400'd, each was swallowed as a WARN, and the source
+        # still counted toward `sources_live` — it contributed 0 items for a full day with no
+        # alarm. If NOTHING succeeded, the source is down: say so and let fetch's salvage pass
+        # and the fetch_health alert do their job.
+        if kws and failed == len(kws):
+            raise SourceError(f"all {failed} HN keywords failed — source is down, not empty")
         return list(by_url.values())

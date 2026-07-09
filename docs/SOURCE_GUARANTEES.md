@@ -29,7 +29,8 @@
 | **hf_papers** | 96h | 服务端 ~50 条 ≈ 8 天 | 未见顶格（29–39/跑） | 1/3 天完整；>8 天超服务端深度丢失，**但 arXiv id 跨源去重 → 几乎全部经 arxiv 源补回** | **中（冗余强）**——它本质是 arxiv 的策展视图 |
 | **rss** | 48h | 解析上限 60；服务端深度实测：openai-news 1028 条/全史 · deepmind 100/252d · simonwillison 30/10.5d · latent-space 20/8.9d · qwen 44/全史 · newsletters 20 条/86–434d | 无 | ≤7 天全部可补（最浅 latent-space ≈8.9d 贴边）；>10 天受 feed 自身深度限制 | **强（≤7 天）**；⚠ langchain-changelog 2026-07-06 探针返回 0 条（`--mode validate` 跟踪） |
 | **github_releases** | 48h | B1b 后：**REST API 30 条优先**（claude-code 实测 30 条=29.1 天）；atom 兜底仅 **10 条（GitHub 服务端硬上限，我们此前的 limit=15 形同虚设）** | atom 10 条对高频仓极浅：**cline 的 10 条实测只跨 9 小时**（sdk/* 碎 tag 洪泛）——连两次日跑之间都盖不住 | claude-code ~1.07 发/天 → 30 条 ≈ 28 天 ✓；cline 含 sdk ~26 发/天 → 30 条 ≈ 1.2 天（碎 tag 会漏，CLI 主线 ~1 发/天仍够） | **强（REST 路径）/ 弱（atom 兜底 + 高频仓）**——兜底期间高频仓可能漏碎 tag，属已知诚实边界 |
-| **hackernews** | 48h | search_by_date 每关键词 20 条 | 实测当前 48h 内命中 ≤3/kw（**6× 余量**，未见饱和） | 按时间倒序 → 补课可回溯至 20/kw 深度；points 门槛查询时评估，晚查反而积分更足 | **中-强**（>20 命中/kw/窗才漏——从未观测到） |
+| **hackernews** | 48h | `/search` 每关键词 20 条（按 points 降序，窗口内） | 实测当前 48h 内过闸 ≤5 条/跑（未见饱和） | 窗口内取最高分的 20 条 → 补课回溯受 `created_at_i>cutoff` 约束，不再受排序位次影响 | **中-强**（>20 条 ≥min_points/kw/窗才漏——从未观测到） |
+|  | | ⚠ **2026-07-09 上游回归**：Algolia 把 `points` 从 `numericAttributesForFiltering` 摘掉，`numericFilters=points>N` 在两个端点都 400。适配器按设计吞掉 per-keyword 异常 → **整源静默归零一整天**（07-08 尚有 10-11 条）。已改 `/search`（custom ranking = points desc）+ 服务端 `created_at_i` 窗 + **客户端 points 闸**。教训：per-keyword 容错掩盖了全源故障，`sources_live` 仍报它活着。 | | | |
 | **html**（anthropic news/eng） | 无窗口滤 | index 页 limit 20–25 卡；**B3b 起空摘要用文章页 og:description 补齐**（磁盘缓存、稳态零额外请求） | 无（backfill 8/源/跑单调耗尽） | 停机不丢（页面还在）；深度=index 页本身 | **强（慢滴灌）**——迟到可达数天，绝不永久漏；「迟到 + 光杆标题无证据 + 分数被压」曾让 Claude Sonnet 5 / Claude Tag 发布在池 3–5 跑上不了桌（分数端 B3 修、证据端 B3b 修） |
 
 ## 三个结构性洞与修复（2026-07-06 收口）

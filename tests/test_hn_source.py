@@ -72,3 +72,31 @@ def test_one_bad_keyword_never_kills_the_source():
     s.params["keywords"] = ["bad", "MCP"]
     items = _Flaky([]).fetch(s, TimeWindow(hours=48.0))
     assert [i.title for i in items] == ["ok"]
+
+
+def test_every_keyword_failing_reports_the_source_as_down(monkeypatch):
+    """per-keyword 容错不能掩盖全源故障：07-09 Algolia 契约变更时七个关键词全 400，
+    每个都被吞成 WARN，源却仍计入 sources_live —— 整整一天贡献 0 条、零告警。"""
+    import pytest
+
+    class _AllDead(_Src):
+        def get_json(self, url):
+            raise RuntimeError("400 Client Error")
+
+    s = _source()
+    s.params["keywords"] = ["a", "b", "c"]
+    with pytest.raises(HN.SourceError, match="source is down"):
+        _AllDead([]).fetch(s, TimeWindow(hours=48.0))
+
+
+def test_partial_keyword_failure_is_still_tolerated(monkeypatch):
+    """一个词挂不该拖垮整源——原有容错必须保留。"""
+    class _Half(_Src):
+        def get_json(self, url):
+            if "bad" in url:
+                raise RuntimeError("boom")
+            return {"hits": [_hit("ok", 99)]}
+
+    s = _source()
+    s.params["keywords"] = ["bad", "MCP"]
+    assert [i.title for i in _Half([]).fetch(s, TimeWindow(hours=48.0))] == ["ok"]
