@@ -1088,3 +1088,35 @@ mid-stream"）。看门狗从头到尾就没开过火；我把错误串对错了
    是同一个 `yield` 里的两个三元分支，指向完全不同的 cause。只 grep 到字符串存在是不够的。
 3. **依赖没钉版本 = 每天开盲盒。** 产品的核心一环（V5 深读）被一次静默的 brew cask 升级
    打掉了两天，没有任何告警。凡是「已知 good」的外部二进制，都该钉住 + doctor 体检。
+
+---
+
+# 07-09 「白跑」的真正定义：没送到人手上的条目被标成「已推送」
+
+用户要出门、Mac 网络将中断，问「正在跑的会不会白跑」。这个问题逼出一个比断网更严重的 bug。
+
+## 什么其实丢不了
+opus 深读（本趟唯一昂贵的东西，~30min）**逐篇 checkpoint 落盘**，且**失败绝不进 checkpoint**
+（07-06 血泪：一次失败被 checkpoint 后每次续跑都复用它，变成永久的洞）。断网最多让 synthesize
++ deliver 重做——一次 sonnet 调用加一次部署。
+
+## 什么会真的被烧掉
+```python
+# 旧代码
+if results.get("local") or any(results.values()):
+    self._mark_seen(ctx)
+```
+`local` 是本机归档，`macos` 是合着盖的桌面通知——**两者成功都不代表东西到了他手机上**。
+07-08 那次：`web_reader=false`（wrangler 超时）+ `dingtalk_card=false`（DNS 失败）+
+`local=true` → 当天 10 条全部 `_mark_seen` → **从此永远出不了候选池，再也不会被推送**。
+这才是「白跑」：不是这一跑白费，是**那 10 条内容被永久退休了**。
+
+## 修
+`REMOTE_CHANNELS = (dingtalk, web_reader, dingtalk_card, dingtalk_file)`。
+配置了远程渠道 → 必须至少一个成功才 `_mark_seen`；全失败则 `seen_withheld` 并 WARN，
+条目留给下一跑重推。**一次重推很便宜，一条被静默退休的条目就没了。**
+没配任何远程渠道时（纯本地用法），本地归档就是投递，行为不变。
+
+## 顺带确立的操作纪律
+出门/断网前先 `cp seen.json first_seen.json deepread/ → data/state/pre-outage-snapshot/`。
+seen.json 是**不可逆**状态；digest/详解都可重生成，它不行。

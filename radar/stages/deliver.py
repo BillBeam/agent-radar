@@ -19,6 +19,14 @@ from ..core.registry import register
 CHANNEL_ORDER = ["dingtalk", "web_reader", "dingtalk_card", "dingtalk_file", "local", "macos"]
 SEEN_RETENTION_DAYS = 60
 
+# Channels that actually put the digest in front of the user. `local` is an archive on this
+# Mac and `macos` is a desktop notification behind a closed lid — neither means "he read it".
+# Marking items seen on those alone burns them: they are dropped from every future candidate
+# pool and can never be pushed again. That is what happened on 2026-07-08 — both remote
+# channels failed (wrangler timeout + DingTalk DNS), `local` succeeded, and the day's 10 items
+# were retired without ever reaching the phone. An item is "seen" only once it has left the box.
+REMOTE_CHANNELS = ("dingtalk", "web_reader", "dingtalk_card", "dingtalk_file")
+
 
 @register("stage", "deliver")
 class DeliverStage(Stage):
@@ -40,8 +48,21 @@ class DeliverStage(Stage):
                 ctx.log.warn("channel failed", channel=cname, error=repr(e)[:140])
         ctx.stats["delivered"] = results
 
-        # dedup bookkeeping: only mark seen if it actually went somewhere durable
-        if results.get("local") or any(results.values()):
+        # Dedup bookkeeping. Retire items ONLY when a remote channel actually took them (see
+        # REMOTE_CHANNELS). If every remote channel failed — a dead network, an expired token —
+        # leave the items unseen so the next run pushes them again; a re-push is cheap, a
+        # silently retired item is gone for good. When no remote channel is configured at all,
+        # the local archive IS the delivery and marks seen as before.
+        remote = [c for c in REMOTE_CHANNELS if c in results]
+        if remote:
+            delivered = any(results[c] for c in remote)
+            if not delivered:
+                ctx.stats["seen_withheld"] = len(ctx.digest.items)
+                ctx.log.warn("nothing reached a remote channel — items stay unseen for a retry",
+                             items=len(ctx.digest.items), results=results)
+        else:
+            delivered = bool(results.get("local"))
+        if delivered:
             self._mark_seen(ctx)
         ctx.log.info("delivered", results=results)
 

@@ -672,3 +672,51 @@ def test_missing_deepread_is_disclosed_in_the_header(tmp_path, monkeypatch):
     S.SynthesizeStage().run(ctx)
     assert "本日 6 篇缺完整详解" in ctx.digest.markdown
     assert "下次跑会自动重试" in ctx.digest.markdown
+
+
+# ---- deliver: 没送到人手上的条目不许被标成「已推送」 ----
+
+def _deliver_ctx(results):
+    """Run DeliverStage's seen-decision with a stubbed channel set."""
+    import radar.stages.deliver as D
+    from radar.core import registry
+    ctx = _ctx()
+    ctx.items = [_item(title="A", score=9)]
+    from radar.core.models import Digest
+    ctx.digest = Digest(date="2026-07-09", markdown="x", markdown_brief="x", items=ctx.items)
+    marked = []
+
+    class _Ch:
+        def __init__(self, name): self.name = name
+        def is_enabled(self, cfg): return self.name in results
+        def send(self, digest, c): return results[self.name]
+
+    orig_get = registry.get
+    registry.get = lambda kind, name: (lambda: _Ch(name)) if kind == "channel" else orig_get(kind, name)
+    stage = D.DeliverStage()
+    stage._mark_seen = lambda c: marked.append(len(c.digest.items))
+    try:
+        stage.run(ctx)
+    finally:
+        registry.get = orig_get
+    return ctx, marked
+
+
+def test_seen_withheld_when_no_remote_channel_took_the_digest():
+    """07-08：两个远程渠道全失败、local=true，10 条却被标成已推送——从此永远出不了候选池。
+    一次重推很便宜，一条被静默退休的条目就没了。"""
+    ctx, marked = _deliver_ctx({"web_reader": False, "dingtalk_card": False,
+                                "local": True, "macos": True})
+    assert marked == []
+    assert ctx.stats["seen_withheld"] == 1
+
+
+def test_seen_marked_when_any_remote_channel_succeeded():
+    _, marked = _deliver_ctx({"web_reader": False, "dingtalk_card": True, "local": True})
+    assert marked == [1]
+
+
+def test_local_only_setup_still_marks_seen():
+    """没配任何远程渠道时，本地归档就是投递——不能让条目永远重推。"""
+    _, marked = _deliver_ctx({"local": True, "macos": True})
+    assert marked == [1]
