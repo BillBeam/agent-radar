@@ -16,6 +16,18 @@ from pathlib import Path
 MODES = ["daily", "weekly", "validate", "doctor", "status", "query", "eval", "review", "evolve", "serve"]
 
 
+def _claude_version(binary: str | None) -> str | None:
+    """`claude --version` → "2.1.201", or None if it can't be asked. Never raises."""
+    if not binary:
+        return None
+    try:
+        import subprocess
+        out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=15)
+    except Exception:  # noqa: BLE001 — doctor must never crash on a probe
+        return None
+    return (out.stdout or "").strip().split(" ")[0] or None
+
+
 def cmd_doctor() -> int:
     """Self-diagnostics: is everything wired to run unattended?"""
     from .core.config import Paths, load_config
@@ -42,6 +54,21 @@ def cmd_doctor() -> int:
 
     claude = shutil.which("claude")
     check("claude CLI on PATH", claude is not None, detail=claude or "brew install claude")
+
+    # An UNPINNED CLI is how 2026-07-09 happened: homebrew swapped 2.1.204 → 2.1.205 at
+    # 07-08 23:59 and every streamed response over ~301s started dying mid-flight, silently
+    # halving the V5 详解 for two days. The wrapper honours AGENT_RADAR_CLAUDE_BIN; if it is
+    # unset the pipeline rides whatever `claude` happens to be on PATH today.
+    pinned = os.environ.get("AGENT_RADAR_CLAUDE_BIN")
+    check("claude CLI pinned (AGENT_RADAR_CLAUDE_BIN)", bool(pinned), warn=not pinned,
+          detail=pinned or "unset → an auto-update can silently break deepread (see decisions.md 07-09)")
+    if pinned and not os.access(pinned, os.X_OK):
+        check("pinned claude CLI is executable", False, detail=pinned)
+    ver = _claude_version(pinned or claude)
+    if ver:
+        check(f"claude version {ver}", ver != "2.1.205", warn=(ver == "2.1.205"),
+              detail="2.1.205 severs streamed responses at ~301s — pin 2.1.201"
+                     if ver == "2.1.205" else "")
 
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     check("ANTHROPIC_API_KEY unset (use subscription)", not has_key,

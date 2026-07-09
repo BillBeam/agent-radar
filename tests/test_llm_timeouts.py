@@ -1,13 +1,13 @@
-"""claude -p 的超时旋钮 —— 两个看门狗，生效值取 min，少设一个修复就被静默吃掉。
+"""claude -p 的超时旋钮 + CLI 版本钉死。
 
-2.1.205 反编译（`strings` on the pinned binary）:
-    fSi() = Math.max(Number(env.CLAUDE_STREAM_IDLE_TIMEOUT_MS) || 0, 300_000)   # 地板 300s
-    mSi() = ... env.CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS ... clamp[10s, 30min]
-    Io = fSi();  No = Math.min( mSi(En()), streamWatchdogOn ? Io : Infinity )
+两个 idle 旋钮都是真的（`strings` on the binary）：生效期限 = `min(mSi() /* BYTE_ */,
+fSi() /* 无 BYTE_，地板 300_000 */)`，只设一个另一个仍在钳制 —— 所以两个都设、都等于本次
+调用的 timeout，让 wrapper 成为唯一的期限所有者。
 
-只设 BYTE_ 那个（07-06 的修复）→ mSi() 升到 1200s，随即被 Math.min 压回 Io=300s。
-后果：每一次需要 >300s 的 opus 深读都死在 303.7s；trace 里**所有成功的 opus 调用都 <300s**。
-本文件把「两个都设、都等于本次调用的 timeout」钉死——CLI 升级后若再回归，这里先红。
+⚠ 但它们**不是** 07-09 那个 300s 天花板的解药：实测把看门狗抬到 1200s、甚至整个关掉，
+opus 仍在 ~301.2s 被 `Connection closed mid-response` 砍断。真根因是 CLI 2.1.205 的上游
+回归，靠 `AGENT_RADAR_CLAUDE_BIN` 钉回 2.1.201 解决（见 decisions.md 07-09 的更正条目）。
+本文件同时钉住那条纪律：wrapper 必须尊重这个 pin。
 """
 from __future__ import annotations
 
@@ -21,43 +21,55 @@ _IDLE_KNOBS = ("CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS", "CLAUDE_STREAM_IDLE_TIMEOUT
 
 
 @pytest.fixture
-def captured_env(monkeypatch):
+def captured(monkeypatch):
     seen: dict = {}
 
     def fake_run(cmd, **kw):
-        seen.update(kw.get("env") or {})
+        seen["env"] = kw.get("env") or {}
+        seen["cmd"] = cmd
         return SimpleNamespace(returncode=0, stdout='{"result":"ok"}', stderr="")
 
     monkeypatch.setattr("radar.llm.claude_code.subprocess.run", fake_run)
     return seen
 
 
-def test_both_idle_watchdogs_are_raised_to_our_timeout(captured_env):
-    llm = ClaudeCodeLLM()
-    llm._run("prompt", None, "opus", 1200.0)
-    for knob in _IDLE_KNOBS:
-        assert captured_env.get(knob) == "1200000", (
-            f"{knob} 未对齐 → 生效值 = min(两者) 会被 300s 地板压回，>300s 的深读全死"
-        )
-    assert captured_env.get("API_TIMEOUT_MS") == "1200000"
+def test_both_idle_knobs_are_set_and_equal(captured):
+    """只设带 BYTE_ 的那个 → 另一个（地板 300s）仍在 min() 里钳制。"""
+    ClaudeCodeLLM()._run("prompt", None, "opus", 1200.0)
+    env = captured["env"]
+    assert {env.get(k) for k in _IDLE_KNOBS} == {"1200000"}
+    assert env.get("API_TIMEOUT_MS") == "1200000"
 
 
-def test_knobs_track_the_call_timeout_not_a_constant(captured_env):
-    llm = ClaudeCodeLLM()
-    llm._run("p", None, "haiku", 480.0)
-    assert {captured_env[k] for k in _IDLE_KNOBS} == {"480000"}
+def test_knobs_track_the_call_timeout_not_a_constant(captured):
+    ClaudeCodeLLM()._run("p", None, "haiku", 480.0)
+    assert {captured["env"][k] for k in _IDLE_KNOBS} == {"480000"}
 
 
-def test_the_wrapper_stays_the_single_deadline_owner(captured_env):
-    """两个旋钮必须彼此相等：不等 → Math.min 让实际期限不等于我们声明的 timeout。"""
-    llm = ClaudeCodeLLM()
-    llm._run("p", None, "sonnet", 900.0)
-    a, b = (captured_env[k] for k in _IDLE_KNOBS)
-    assert a == b
-
-
-def test_api_key_never_reaches_the_child(captured_env, monkeypatch):
+def test_api_key_never_reaches_the_child(captured, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-be-stripped")
+    ClaudeCodeLLM()._run("p", None, "haiku", 60.0)
+    assert "ANTHROPIC_API_KEY" not in captured["env"]
+
+
+def test_pinned_cli_binary_is_honoured(monkeypatch, captured):
+    """AGENT_RADAR_CLAUDE_BIN 是唯一挡住「brew 半夜换 CLI 打掉深读」的东西。
+    2026-07-09: 2.1.205 把每个 >301s 的流式响应砍断；2.1.201 正常。"""
+    monkeypatch.setenv("AGENT_RADAR_CLAUDE_BIN", "/pinned/claude")
     llm = ClaudeCodeLLM()
-    llm._run("p", None, "haiku", 60.0)
-    assert "ANTHROPIC_API_KEY" not in captured_env
+    assert llm.bin == "/pinned/claude"
+    llm._run("p", None, "opus", 60.0)
+    assert captured["cmd"][0] == "/pinned/claude"
+
+
+def test_falls_back_to_path_when_unpinned(monkeypatch):
+    monkeypatch.delenv("AGENT_RADAR_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr("radar.llm.claude_code.shutil.which", lambda _: "/usr/bin/claude")
+    assert ClaudeCodeLLM().bin == "/usr/bin/claude"
+
+
+def test_doctor_flags_the_broken_cli_version():
+    """doctor 必须能认出 2.1.205 —— 这个版本静默吃掉了两天的 V5 详解。"""
+    from radar.cli import _claude_version
+    assert _claude_version(None) is None
+    assert _claude_version("/definitely/not/a/binary") is None

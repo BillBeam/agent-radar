@@ -114,23 +114,25 @@ class ClaudeCodeLLM(LLMClient):
             cmd += ["--system-prompt", system]
         env = dict(os.environ)
         env.pop("ANTHROPIC_API_KEY", None)  # force subscription, never API billing
-        # The CLI aborts a request after 300s of stream silence — and heavy prompts (80K
-        # grounding) leave opus silent PAST that before its first byte → "API Error:
-        # Connection closed mid-response". There are TWO watchdogs, and the effective
-        # deadline is the MIN of both (2.1.205, decompiled):
-        #     Io = max(CLAUDE_STREAM_IDLE_TIMEOUT_MS || 0, 300_000)      # floor 300s
-        #     No = min( mSi(),  streamWatchdogOn ? Io : Infinity )       # mSi() reads BYTE_
-        # An earlier fix set only CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS ("docs circulate a wrong
-        # name without BYTE_") — mSi() rose to our timeout and Math.min silently clamped it
-        # back to Io=300_000. The mitigation looked applied and never was: every opus call
-        # over 300s still died at 303.7s (12/15 in the 07-09 00:20 run; every SUCCESSFUL opus
-        # call in the whole trace history is under 300s — a perfect ceiling).
-        # BOTH names must be set, aligned to OUR call timeout, so this wrapper stays the
-        # single deadline owner. Verified by `strings` on the pinned binary; re-check on a
-        # CLI upgrade (2.1.205 auto-installed on 07-08 with AGENT_RADAR_CLAUDE_BIN unset).
+        # Idle/stream watchdog knobs, aligned with OUR call timeout so this wrapper stays the
+        # single deadline owner. Both names are real (`strings` on the binary): the effective
+        # deadline is `min(mSi() /* BYTE_ */, fSi() /* no BYTE_, floor 300_000 */)`, so setting
+        # only one leaves the other clamping. Set both. Belt and braces — NOT a fix for the
+        # 300s ceiling below; these knobs were measured to make no difference to it.
         env["CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS"] = str(int(timeout * 1000))
         env["CLAUDE_STREAM_IDLE_TIMEOUT_MS"] = str(int(timeout * 1000))
         env["API_TIMEOUT_MS"] = str(int(timeout * 1000))
+        # ── The 300s ceiling (2026-07-09) ────────────────────────────────────────────────
+        # CLI 2.1.205 severs EVERY streamed response at ~301.2s: "API Error: Connection closed
+        # mid-response." Reproduced 3× on one real deepread prompt, identically with the proxy
+        # and direct, with the watchdog raised to 1200s and with it disabled — none of the env
+        # knobs move it. The trace is unambiguous: 06-30…07-07 completed opus calls of 357s,
+        # 461s, 529s, 706s, 818.9s; from the 07-08 11:34 run onward EVERY call ≥300s fails at
+        # 303.x and every success is <300s. It is an upstream regression, not our config.
+        # The same prompt on 2.1.201 returns a full 13.8K-char 详解 in 267s.
+        # ⇒ AGENT_RADAR_CLAUDE_BIN (.env, machine-local) pins us to 2.1.201. `doctor` warns
+        #   when it is unset, because that is exactly how homebrew swapped 2.1.204 → 2.1.205
+        #   at 07-08 23:59 and silently cost us two days of V5 详解. Re-test before unpinning.
         env["DISABLE_AUTOUPDATER"] = "1"   # a pinned binary must never self-update mid-run
         _NEUTRAL_CWD.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
