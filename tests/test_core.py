@@ -648,3 +648,27 @@ def test_triage_all_chunks_failed_falls_back_whole_pool(monkeypatch):
     TriageStage().run(ctx)
     assert ctx.stats["triage_degraded"] is True               # honest whole-run flag preserved
     assert all(it.score is not None for it in ctx.items)
+
+
+def test_missing_deepread_is_disclosed_in_the_header(tmp_path, monkeypatch):
+    """07-08 投了 10 条却只有 4 篇详解，简报和网页一个字没说。缺详解必须写在头上——
+    读者要能分辨「今天只有这些好料」和「深读挂了」。"""
+    from datetime import datetime, timezone
+    import radar.stages.synthesize as S
+    monkeypatch.setattr(S.Paths, "digests", tmp_path)
+    ctx = _ctx()
+    ctx.llm = None
+    ctx.sources = []
+    it = _item(title="F1", score=9)
+    it.published_at = datetime.now(timezone.utc)
+    ctx.items = [it]
+
+    S.SynthesizeStage().run(ctx)
+    assert "缺完整详解" not in ctx.digest.markdown          # 全成功 → 不喊狼
+
+    ctx.digest = None
+    ctx.stats["deepread.failed"] = 5
+    ctx.stats["deepread.no_text"] = 1
+    S.SynthesizeStage().run(ctx)
+    assert "本日 6 篇缺完整详解" in ctx.digest.markdown
+    assert "下次跑会自动重试" in ctx.digest.markdown

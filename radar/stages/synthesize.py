@@ -157,10 +157,17 @@ class SynthesizeStage(Stage):
         cap = ctx.config.max_items(ctx.mode)
         thin = (f"> 入选 {len(items)}/{cap}：过质量门的只有这些——宁缺毋滥，不凑数。\n"
                 if len(items) < cap else "")
+        # Missing 详解 must be visible (07-08 shipped 10 items with only 4 explanations and the
+        # page said nothing — the reader had no way to tell a short day from a broken deepread).
+        # `deepread.failed` = LLM error; `deepread.no_text` = 正文抓不到. Both retry next run.
+        n_missing = int(ctx.stats.get("deepread.failed", 0)) + int(ctx.stats.get("deepread.no_text", 0))
+        missing = (f"> ⚠️ 本日 {n_missing} 篇缺完整详解：深读调用失败或抓不到正文——"
+                   f"这些条目只有一句话简介，下次跑会自动重试（失败不进 checkpoint）。\n"
+                   if n_missing else "")
         header = (f"# Agent Radar · {date}（{weekday}）\n\n"
                   f"> 扫描 {len(ctx.sources)} 源 · 候选 {funnel.get('candidates', 0)} · "
                   f"{counts} · 跳过已读 {ctx.stats.get('skipped_seen', 0)}\n"
-                  + _health_line(ctx) + thin + degraded)
+                  + _health_line(ctx) + thin + degraded + missing)
 
         tldr = _tldr(ctx, ordered)
         tldr_block = f"\n## 🎯 {title_kind} TL;DR\n\n{tldr}\n" if tldr else ""

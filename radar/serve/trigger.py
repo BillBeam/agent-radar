@@ -53,8 +53,15 @@ def read_token(secret: str) -> str:
 
 def _child_env() -> dict:
     """serve's env minus NO_PROXY (see module docstring). run-daily.sh re-sources .env, so
-    HTTPS_PROXY / DingTalk creds come back on their own; we only undo serve's own blocker."""
-    return {k: v for k, v in os.environ.items() if k not in _PROXY_BLOCKERS}
+    HTTPS_PROXY / DingTalk creds come back on their own; we only undo serve's own blocker.
+
+    AGENT_RADAR_FORCE=1 waives run-daily.sh's AC-power gate. That gate exists to stop a
+    *scheduled* run from starting on battery and being sliced into a degraded digest; a tap
+    on ⟳ is the user standing at the machine and asking for it anyway, so it must never be
+    refused (the button would look broken and the recovery path would be gone)."""
+    env = {k: v for k, v in os.environ.items() if k not in _PROXY_BLOCKERS}
+    env["AGENT_RADAR_FORCE"] = "1"
+    return env
 
 
 def _run_summary() -> tuple[Optional[str], str]:

@@ -45,3 +45,36 @@ bash scripts/install-launchd.sh uninstall
 - 不用 launchd：`run-daily.sh` 可直接进 cron；serve 可 `nohup bash scripts/run-serve.sh > data/state/serve.log 2>&1 &`。
 
 > 生成的 `~/Library/LaunchAgents/com.agentradar.*.plist` 含你的绝对路径与代理，**留在本地、不进仓库**（仓库只放 `deploy/*.plist` 模板 + `scripts/run-*.sh` + `install-launchd.sh`，全部脱敏）。
+
+## 无人值守的两个前提（2026-07-09 三连事故后加）
+
+定时跑只有在**机器醒着、插着电**时才可能跑完整。三次连续断供（07-07 dark-wake、07-08 电池
+切片、07-09 合盖睡眠）都是同一件事：跑被睡眠切成碎片，每个醒来窗口里网络是死的，管线诚实降级
+后什么也没推到手机上。`caffeinate -s` **在电池上是官方 no-op**，软件盖不住。
+
+**1. 唤醒计划**（一次性，需要 sudo；迁移新机时会丢，记得重装）
+
+```sh
+sudo pmset repeat wakeorpoweron MTWRFSU 17:25:00   # daily 跑在 17:30
+pmset -g sched                                     # 核对
+```
+
+**2. 插电**。没插电时 `run-daily.sh` 会**主动跳过**这次定时跑（等 10 分钟 AC 未到 → 退出 0），
+并往钉钉推一句「今天的定时跑跳过了」。这是设计：跳过好过产出一份被睡眠切碎的降级简报去覆盖
+昨天完好的那份。恢复路径 = 主页的「⟳ 立即抓取」按钮（它带 `AGENT_RADAR_FORCE=1`，不受这道闸约束）。
+
+## 钉死 claude CLI 版本（必须）
+
+`.env` 里设 `AGENT_RADAR_CLAUDE_BIN=<path>`。**不钉 = 每天开盲盒**：homebrew 在 2026-07-08
+23:59 把 cask 从 2.1.204 换成 **2.1.205**，而 2.1.205 会把每个超过 ~301s 的流式响应砍断
+（`API Error: Connection closed mid-response`）——V5 深读几乎每篇都超过 300s，于是产品的核心
+一环静默失效了两天，零告警。2.1.201 正常。
+
+```sh
+npm_config_prefix=$HOME/.local/share/agent-radar/cc-2.1.201 \
+  npm i -g @anthropic-ai/claude-code@2.1.201
+echo 'AGENT_RADAR_CLAUDE_BIN=$HOME/.local/share/agent-radar/cc-2.1.201/bin/claude' >> .env
+python -m radar --mode doctor      # 未钉住 / 撞上 2.1.205 都会 ⚠
+```
+
+解钉之前先复测：拿一篇 >300s 的真实深读提示词跑一遍，确认新版本能跑完。

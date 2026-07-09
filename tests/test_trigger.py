@@ -247,3 +247,13 @@ def test_timeout_kills_the_whole_process_group(monkeypatch, tmp_path):
     ok, _, note = T.run_daily()
     assert ok is False and "已放弃" in note
     assert killed and killed[0] == T.signal.SIGTERM     # 组杀，不是只杀 shell
+
+
+def test_manual_trigger_waives_the_ac_power_gate(monkeypatch):
+    """run-daily.sh 的电池闸只该拦定时跑。点 ⟳ 是人站在机器边上明确要求 —— 拦下来
+    按钮就看着是坏的，而它正是那道闸指望的恢复路径。"""
+    monkeypatch.setenv("NO_PROXY", "*")
+    env = T._child_env()
+    assert env["AGENT_RADAR_FORCE"] == "1"
+    assert "NO_PROXY" not in env
+

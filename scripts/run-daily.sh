@@ -34,13 +34,33 @@ for i in $(seq 1 40); do
 done
 [ "$net_ready" = 1 ] || echo "[run-daily] network still not ready after 40 probes — proceeding anyway" >&2
 
+# --- AC-power gate (2026-07-09 postmortem) ---
 # caffeinate: once the run starts, don't let idle/system sleep chop it into dark-wake
 # fragments mid-pipeline (07-07: fetch was sliced across 4 wake windows). No-op off macOS.
 # ⚠️ On BATTERY caffeinate -s is a documented no-op: closed-lid maintenance sleep still
-# slices the run (07-08: fetch stretched 08:42→10:47 until the lid opened). Software
-# cannot override that — leave a loud marker so a slow run self-diagnoses from this log.
-if command -v pmset >/dev/null 2>&1 && pmset -g batt | grep -q "Battery Power"; then
-  echo "[run-daily] ⚠️ ON BATTERY — sleep can slice this run; plug in AC for reliable unattended runs" >&2
+# slices the run. Three runs in a row (07-07 dark-wake, 07-08 battery, 07-09 clamshell) were
+# chopped into wake windows with no network — each produced a DEGRADED digest that overwrote
+# latest.md and the home page, and delivered nothing to the phone. A skipped run is strictly
+# better than that: it leaves yesterday's good digest intact and says why.
+# Unattended (launchd) only. An interactive/manual run (a tty, or AGENT_RADAR_FORCE=1) is the
+# user standing at the machine — never block that. The home page's ⟳ button is the recovery
+# path, and it spawns this script, so it sets AGENT_RADAR_FORCE=1 through the trigger poller.
+on_battery() { command -v pmset >/dev/null 2>&1 && pmset -g batt | grep -q "Battery Power"; }
+if [ "${AGENT_RADAR_FORCE:-0}" != "1" ] && [ ! -t 1 ] && on_battery; then
+  for i in $(seq 1 10); do            # give a just-woken laptop a chance to see its charger
+    on_battery || break
+    echo "[run-daily] on battery (check #$i) — waiting 60s for AC" >&2
+    sleep 60
+  done
+  if on_battery; then
+    echo "[run-daily] ⚠️ still on battery — SKIPPING this scheduled run (sleep would slice it into" >&2
+    echo "[run-daily]    a degraded digest that overwrites the good one). Tap ⟳ on the home page." >&2
+    "$PY" scripts/push_note.py \
+      "🔌 今天的定时跑跳过了：Mac 在电池上，跑到一半会被睡眠切碎。插上电，或到主页点「⟳ 立即抓取」。" \
+      >/dev/null 2>&1 || true
+    exit 0                            # not a failure — a decision. launchd stays happy.
+  fi
+  echo "[run-daily] AC restored — proceeding" >&2
 fi
 CAFF=""; command -v caffeinate >/dev/null 2>&1 && CAFF="caffeinate -is"
 $CAFF "$PY" -m radar --mode daily          # set -e: daily's failure exits here with its rc (eval skipped)
