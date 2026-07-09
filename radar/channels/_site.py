@@ -128,11 +128,101 @@ font-size:.8rem;margin-right:.35em}
 .dl .why{color:var(--muted);font-size:.86rem}
 .dl a{color:var(--fg)}
 .dl a:hover{color:var(--accent)}
+/* manual run trigger (home only, and only when trigger_api is configured) */
+.runbox{margin:1.4em 0;padding:16px 18px}
+.run-row{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.run-t{font-size:1.02rem;font-weight:650}
+.run-d{font-size:.85rem;color:var(--muted);line-height:1.55;margin-top:.15em}
+.run-btn{font:inherit;font-size:.92rem;font-weight:600;padding:.55em 1.15em;border-radius:999px;
+cursor:pointer;border:1px solid var(--accent);background:transparent;color:var(--accent);
+white-space:nowrap;flex:none;transition:background .12s,color .12s,opacity .12s}
+.run-btn:hover{background:var(--accent);color:var(--bg)}
+.run-btn[disabled]{opacity:.45;pointer-events:none}
+.run-state{display:block;margin-top:.9em;padding-top:.75em;border-top:1px solid var(--hairline);
+line-height:1.75;color:var(--muted)}
+.run-state a{color:var(--accent)}
+.run-state.err{color:var(--bad)}
+"""
+
+# The home page's own path segment IS the capability token (seg = HMAC(secret,"home")) — the
+# same envelope as the day pages' vote buttons, so whoever can read the bookmark can spend a
+# run. Guards live server-side (worker cooldown + the Mac's RunLock), never in this script.
+# KV is eventually consistent (~60s): after a POST the page trusts its OWN request timestamp
+# until the server's state catches up, so the button never flickers back to 待命.
+_TRIGGER_JS = """
+(function(){
+var API=%(api)s,SEG=(location.pathname.split("/")[1]||"");
+var btn=document.getElementById("run-go"),out=document.getElementById("run-state");
+if(!btn||!out)return;
+var myTs=0;try{myTs=+(sessionStorage.getItem("ar-trig-ts")||0)}catch(e){}
+var timer=null;
+function esc(s){var d=document.createElement("div");d.textContent=s||"";return d.innerHTML}
+function ago(ms){var m=Math.round(ms/60000);if(m<1)return "刚刚";if(m<60)return m+" 分钟前";
+  return Math.floor(m/60)+" 小时前";}
+function dur(ms){var t=Math.floor(ms/1000),m=Math.floor(t/60);return m+" 分 "+(t-m*60)+" 秒";}
+function say(txt,err){out.className="run-state readout"+(err?" err":"");out.textContent=txt;}
+function show(st){
+  var s=(st&&st.state)||"idle",now=Date.now(),ts=+((st&&st.ts)||0);
+  if(myTs&&ts>=myTs){myTs=0;try{sessionStorage.removeItem("ar-trig-ts")}catch(e){}}
+  if(myTs&&ts<myTs&&s!=="running")s="queued";      // our POST hasn't propagated yet
+  var busy=(s==="queued"||s==="running");
+  btn.disabled=busy;btn.textContent=busy?"运行中…":"⟳ 立即抓取";
+  if(s==="queued")say("已排队 · 等这台 Mac 接单（最多约 2 分钟）");
+  else if(s==="running")say("正在运行 · 已用 "+dur(now-ts)+" · 通常 20–40 分钟 · 完成后钉钉会推送");
+  else if(s==="done"){out.className="run-state readout";
+    out.innerHTML="✅ "+ago(now-ts)+"完成 · "+esc(st.note)+
+      ' · <a href="'+location.pathname+'">刷新看今天</a>';}
+  else if(s==="failed")say("⚠️ "+ago(now-ts)+"失败 · "+(st.note||"见 Mac 上的 radar.log"),1);
+  else if(s==="busy")say("这台 Mac 上已有一次运行在进行中");
+  else if(s==="stale")say("⚠️ 上一次运行没有回报结果（Mac 可能中途睡了）",1);
+  else say("待命 · 点右边按钮跑一次");
+  if(busy&&!timer)timer=setInterval(poll,10000);
+  if(!busy&&timer){clearInterval(timer);timer=null;}
+}
+function poll(){
+  fetch(API+"?seg="+encodeURIComponent(SEG),{cache:"no-store"})
+    .then(function(r){return r.json()})
+    .then(function(j){if(j&&j.state)show(j.state)})
+    .catch(function(){});
+}
+btn.addEventListener("click",function(){
+  btn.disabled=true;say("发送中…");
+  fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({seg:SEG})})
+  .then(function(r){return r.json().then(function(j){return {s:r.status,j:j||{}}})})
+  .then(function(x){
+    if(x.s===200){myTs=Date.now();try{sessionStorage.setItem("ar-trig-ts",myTs)}catch(e){}
+      show({state:"queued",ts:myTs});return;}
+    if(x.s===409){show(x.j.state||{state:"running",ts:Date.now()});return;}
+    if(x.s===429){btn.disabled=false;
+      say("刚跑过 · 约 "+Math.ceil((x.j.retry_after_s||0)/60)+" 分钟后可再触发",1);return;}
+    if(x.s===503){btn.disabled=false;say("后端未配置（KV 未绑定）",1);return;}
+    throw 0;
+  })
+  .catch(function(){btn.disabled=false;say("没发出去——网络原因，稍后再点一次",1)});
+});
+poll();
+})();
 """
 
 
+def _trigger_html() -> str:
+    return (
+        '<section class="card runbox">'
+        '<div class="run-row"><div class="run-txt">'
+        '<div class="run-t">立即抓取</div>'
+        '<div class="run-d">在 Mac 上跑一次完整管线：28 源 → 筛选 → 10 篇教学级深读 → 推送。'
+        "约 20–40 分钟，跑完钉钉和这里都会更新。</div></div>"
+        '<button class="run-btn" id="run-go" type="button">⟳ 立即抓取</button>'
+        "</div>"
+        '<span class="run-state readout" id="run-state">读取状态…</span>'
+        "</section>"
+    )
+
+
 def render_home(*, latest_date: str, latest_items: list[dict], n_days: int, n_items: int,
-                nav: dict, day_url: str, votes_total: int, faith_pct: Optional[float]) -> str:
+                nav: dict, day_url: str, votes_total: int, faith_pct: Optional[float],
+                trigger_api: Optional[str] = None) -> str:
     wd = _weekday_zh(latest_date)
     head = latest_items[0] if latest_items else None
     hero = ""
@@ -155,11 +245,15 @@ def render_home(*, latest_date: str, latest_items: list[dict], n_days: int, n_it
     )
     body = (
         f"<h1>每日前沿 agent 情报</h1>"
-        f'<p class="readout">{latest_date} {wd} · 最新一期 {len(latest_items)} 篇 · 每天 08:30 自动扫描 28 源</p>'
+        f'<p class="readout">{latest_date} {wd} · 最新一期 {len(latest_items)} 篇 · 每天扫描 28 源</p>'
         f"{hero}{doors}"
-        '<p class="hint" style="color:var(--muted);font-size:.85rem">'
+        + (_trigger_html() if trigger_api else "")
+        + '<p class="hint" style="color:var(--muted);font-size:.85rem">'
         "收藏本页即可：每天的新详解、归档与统计都从这里进。</p>"
     )
+    if trigger_api:
+        import json as _json
+        body += "\n<script>" + _TRIGGER_JS % {"api": _json.dumps(trigger_api)} + "</script>"
     return page_shell(title="Agent Radar · 主页", body=body, active="home", nav=nav,
                       extra_css=HUB_CSS, foot_note="读 → 投票 → 它越来越懂你")
 
@@ -207,6 +301,7 @@ def render_archive(*, dates_desc: list[str], day_urls: dict[str, str],
 def build_site(secret: str, *,
                today: Optional[tuple[str, str]] = None,
                vote_api: Optional[str] = None,
+               trigger_api: Optional[str] = None,
                mermaid: Optional[Callable[[str], Optional[str]]] = None,
                site_dir: Optional[Path] = None,
                log: Any = None) -> dict:
@@ -307,7 +402,8 @@ def build_site(secret: str, *,
             latest_date=latest, latest_items=items_by_date.get(latest, []),
             n_days=len(dates), n_items=sum(len(v) for v in items_by_date.values()),
             nav=nav, day_url=day_urls[latest],
-            votes_total=votes["up"] + votes["down"], faith_pct=faith)
+            votes_total=votes["up"] + votes["down"], faith_pct=faith,
+            trigger_api=trigger_api)
         _emit(nav["home"].strip("/"), home_html, "home")
 
         built_days = {n.split(":", 1)[1] for n in built if n.startswith("day:")}

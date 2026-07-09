@@ -113,6 +113,7 @@ launchd（以用户身份跑 → 能读 ~/.claude 订阅登录态）
 - deliver 迭代启用渠道、**隔离失败**、投递后才标记 `seen.json`（防重推）。
 - **Web 情报台（2026-07-07，`_design.py`/`_site.py`/`_site_stats.py`）**：web_reader 每跑幂等重建整站——每日详解页（目录+锚点+上一天/下一天）+ **主页 HUB**（今日头条+三入口，seg=HMAC(secret,"home")，唯一需要收藏的 URL）+ **归档台**（"index"，倒序每天 `[N]` 标题+一句话洞察直达锚点）+ **数据统计**（"stats"，构建时聚合：反馈画像/忠实度趋势/每日构成/主题热力/系统健康，内联 SVG 零 JS 零后端）。统一设计系统（克制高级、light/dark、字体异步加载系统栈兜底）；**每页写盘前过 leak 闸**（命中=跳过该页）；站点根维持 404、全站 noindex。 同日多版本：最新页顶部版本注记（含 lost 墓碑如实列出），历史版出 `{seg}/v{k}/` 只读子页（同能力信封、过同一 leak 闸、不参与投票）。
 - **网页投票（同源）**：站点随部署携带 Pages `_worker.js`——`POST /vote`（页面 seg 即能力令牌，worker 以 WEB_SECRET 重算 HMAC 校验）+ `GET /votes`（独立派生 bearer）；`radar --mode serve` 内置轮询线程把票并进 `record_feedback`（与 `radar mark`/钉钉卡逐键一致，last-wins）。钉钉卡与网页**双通道**并存；KV 未绑定时页面投票钮不渲染、其余零影响。
+- **网页手动触发（2026-07-09，`radar/serve/trigger.py`）**：主页「⟳ 立即抓取」→ 同源 `POST /trigger`（seg=HMAC(secret,"home") 即能力令牌）→ KV → serve 内 25s 轮询线程 `GET /trigger`（独立派生 bearer `trigger-read`）接单 → 起 `scripts/run-daily.sh` → `POST /trigger/state` 回报 queued→running→done/failed，页面读回状态、不是黑盒。**动机**：launchd 定时跑不管 Mac 是否醒着/插电，07-07/07-08/07-09 连续三跑被睡眠切碎（`caffeinate -s` 在电池上是官方 no-op，软件无解）——改成「人在机器边上时按一下」。**一次请求只花一次 opus 的三道闸**：worker 20 分钟冷却 + 在途拒绝（`busy` 不计冷却，因未花额度）；poller 游标**先写后跑**（KV 最终一致 ~60s 会重放同一请求）；管线自身 `RunLock`（`core/lock.py:is_held` 只读探针）兜底。`trigger_api` 与 `vote_api` **分开开关**（投票免费、触发要跑满一轮深读）；回报 note 只含非密字段（篇数/深读数/渠道），绝不带路径、stderr、代理 URL。
 
 ### 6.8 LLM 后端（`radar/llm/claude_code.py`）— ✅
 `claude -p` 封装：剥离 API key、重试、模型分层、`complete()`/`complete_json()`(宽松 JSON 抽取 `_json.py`)。

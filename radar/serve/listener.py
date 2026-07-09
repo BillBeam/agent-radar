@@ -167,11 +167,20 @@ def run_listener(config: Optional[RadarConfig] = None) -> int:
     # (daemon thread; silently off unless web_reader + AGENT_RADAR_WEB_SECRET are configured).
     wr = config.channels.web_reader
     if wr is not None:
+        r = wr.resolved()
         try:
             from .webvotes import start_poller
-            start_poller(base_url=wr.resolved().get("base_url") or "", log=log)
+            start_poller(base_url=r.get("base_url") or "", log=log)
         except Exception as e:  # noqa: BLE001 — the poller must never block the card listener
             log.warn("web-vote poller failed to start", error=repr(e)[:120])
+        # Home-page ⟳ 立即抓取: separate opt-in (`trigger_api`), because a tap here spends a
+        # full opus deepread pass while a vote costs nothing.
+        if r.get("trigger_api"):
+            try:
+                from .trigger import start_poller as start_trigger_poller
+                start_trigger_poller(base_url=r.get("base_url") or "", log=log)
+            except Exception as e:  # noqa: BLE001
+                log.warn("manual-trigger poller failed to start", error=repr(e)[:120])
 
     credential = dingtalk_stream.Credential(creds["client_id"], creds["client_secret"])
     client = dingtalk_stream.DingTalkStreamClient(credential)

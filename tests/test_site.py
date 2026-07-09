@@ -243,3 +243,36 @@ def test_day_version_history_note_and_subpages(tmp_path, monkeypatch):
     assert "历史版本 v1" in v1_html and "旧版正文" in v1_html
     assert not (site / _seg(SECRET, d) / "v2").exists()        # lost → 无页面
     assert f"day:{d}:v1" in res["built"]
+
+
+# ---- 手动触发按钮（主页；trigger_api 未配置时必须完全不存在） ----
+
+def test_home_has_no_trigger_button_without_config(tmp_path, monkeypatch):
+    site = _seed(tmp_path, monkeypatch)
+    S.build_site(SECRET, site_dir=site)
+    from radar.channels.web_reader import _seg
+    home = (site / _seg(SECRET, "home") / "index.html").read_text(encoding="utf-8")
+    assert "run-go" not in home and "/trigger" not in home
+
+
+def test_home_trigger_button_renders_and_script_is_intact(tmp_path, monkeypatch):
+    site = _seed(tmp_path, monkeypatch)
+    S.build_site(SECRET, site_dir=site, trigger_api="/trigger")
+    from radar.channels.web_reader import _seg
+    home = (site / _seg(SECRET, "home") / "index.html").read_text(encoding="utf-8")
+    assert 'id="run-go"' in home and 'id="run-state"' in home
+    assert '"/trigger"' in home                       # api json-encoded into the script
+    # %-format template: a stray %(…)s or a bare % operator would corrupt the JS silently
+    assert "%(" not in home and "%s" not in home
+    # the seg capability comes from the page's own path, never baked into the HTML
+    assert 'location.pathname.split("/")[1]' in home
+    assert SECRET not in home
+
+
+def test_trigger_button_is_home_only(tmp_path, monkeypatch):
+    site = _seed(tmp_path, monkeypatch)
+    S.build_site(SECRET, site_dir=site, trigger_api="/trigger")
+    from radar.channels.web_reader import _seg
+    for key in ("index", "stats"):
+        html = (site / _seg(SECRET, key) / "index.html").read_text(encoding="utf-8")
+        assert "run-go" not in html

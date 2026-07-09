@@ -109,7 +109,8 @@ class WebReaderChannel(Channel):
         try:
             from ._site import build_site
             res = build_site(secret, today=(digest.date, digest.markdown),
-                             vote_api=r.get("vote_api"), mermaid=mermaid_to_svg, log=ctx.log)
+                             vote_api=r.get("vote_api"), trigger_api=r.get("trigger_api"),
+                             mermaid=mermaid_to_svg, log=ctx.log)
             if f"day:{digest.date}" not in res["built"]:
                 raise RuntimeError("today's page was not built (leak gate or render failure)")
             ctx.stats["home_url"] = f'{r["base_url"]}{res["nav"]["home"]}'

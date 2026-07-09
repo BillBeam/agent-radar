@@ -40,3 +40,14 @@ macos = true        # desktop notification when a digest is ready
 # 空段即启用——凭证只从 env 读、绝不写这里：
 # DINGTALK_CLIENT_ID / SECRET / ROBOT_CODE / CARD_TEMPLATE_ID / USER_ID（见 .env）。
 # [channels.dingtalk_card]
+
+# 完整详解 → Cloudflare Pages 阅读页（+ 主页/归档/统计）。密钥只从 env 读：
+# AGENT_RADAR_WEB_SECRET / CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID。
+# 页面 URL 段 seg = HMAC(secret, date) —— 不可枚举、每天独立、noindex。
+# [channels.web_reader]
+# project_name = "agent-radar"
+# vote_api    = "/vote"     # 阅读页 👍/👎 → 同源 Worker（写 KV）；serve 每 60s 并进 feedback。留空=按钮关
+# trigger_api = "/trigger"  # 主页「⟳ 立即抓取」→ 同源 Worker；serve 接单跑 scripts/run-daily.sh。留空=按钮关
+#   # trigger 与 vote 分开开关：投一票不花钱，点一次触发要跑满一轮 opus 深读。
+#   # 需要 Worker 绑定 KV（namespace `agent-radar-votes` → 变量名 VOTES）+ Pages secret WEB_SECRET。
+#   # 谁拿到主页 URL 谁就能触发 —— 护栏在服务端：Worker 20 分钟冷却 + Mac 的 RunLock。

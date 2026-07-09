@@ -34,7 +34,8 @@ def main() -> int:
     r = wr.resolved() if wr else {}
     log = Logger("rebuild-site", echo=True)
 
-    res = build_site(secret, vote_api=r.get("vote_api"), mermaid=mermaid_to_svg, log=log)
+    res = build_site(secret, vote_api=r.get("vote_api"), trigger_api=r.get("trigger_api"),
+                     mermaid=mermaid_to_svg, log=log)
     del secret
     base = r.get("base_url") or ""
     print(f"built={len(res['built'])} skipped={res['skipped'] or '[]'}")

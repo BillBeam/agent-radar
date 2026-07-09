@@ -962,3 +962,49 @@ CC 独立产出的开放式自审：第一层=实现 vs 文档承诺、第二层
 - **调研依据**（标注调研到 vs 推断）：RankGPT/PRP/MiniCheck(2404.10774)/Letta·Mem0·Zep/smol.ai/healthchecks.io/MCP 2026-07-28 RC/OpenAI Agents SDK·Google ADK releases/Claude 2026 weekly 单桶限额。
 - **回归对账**（vs 架构审计 2026-06-29）：6 缺口中记忆选型/可观测/记忆落地 3 项 fixed，个性化/eval 闭环/token 预算 3 项半 fixed 半 open（新债：反馈不进 rerank、幸存者偏差、预算漏算 cache）。
 - **隐私自守**：报告过 leak_scan 0 命中 + 结构性泄漏词（日期/职业指纹）人工清零；敏感处置细节（部署标识/端点/注入手法/命中原文）落 gitignored `data/self_improve/local/`。**发现既存泄漏待用户拍板**：公开仓 tracked 文件约 8-9 处词表可识别命中 + CF 多个历史部署仍公网可达已下线泄漏页——本轮只报不动（清理=脱敏重提交/filter-repo/转私有=重决策）。
+
+---
+
+# 07-09 断供根因 + 网页手动触发（`radar/serve/trigger.py`）
+
+## 为什么这样
+- **根因（第三次同一件事）**：07-09 那跑 launchd 17:30 该起、机器在睡 → 18:19 醒来才补触发；跑起来后
+  Mac 合盖 + 电池，`Sleep Service Back to Sleep` / `Clamshell Sleep` 把 4h33m 墙钟切成十几段
+  （by_stage 单调钟合计仅 26min）。每个 DarkWake 窗口里代理隧道 `Errno 51 Network is unreachable`、
+  DNS 也死 → 5 源失败 / triage 全池降级（coverage 0.0）/ rerank 回退 / deepread 5 失败 /
+  synthesize 三超时 / **wrangler 部署超时 + 钉钉 token DNS 失败 = 两个推送渠道全 false**。
+  管线 `errors=0` 诚实收工，只有 local+macos。**不是额度、不是崩溃、不是代码 bug。**
+- **软件治不了**：`caffeinate -s` 在电池上是**官方 no-op**（run-daily.sh 里 07-08 留的
+  `⚠️ ON BATTERY` 自诊断标记当天准确打印）。迁移时 `pmset repeat wakeorpoweron` 也丢了
+  （自审 2026-07-08 已点名「睡眠唤醒防线迁移未重建」，本次坐实代价）。
+- **用户拍板**：不加「电池上不跑」硬护栏，改为**「开机后我手动触发」**——不再信任时钟，
+  信任「人在机器边上」这个事实。要求做在网页情报台里。
+
+## 形态（刻意复刻投票通道，不发明新机制）
+`主页 ⟳ → POST /trigger{seg} → CF KV → serve 内 25s 轮询 GET /trigger（bearer）→ 起
+scripts/run-daily.sh → POST /trigger/state` ——与 `webvotes.py` 同构：同源 worker、seg 即能力
+令牌、Mac 侧独立派生 bearer、daemon 线程、失败指数退避。**零新基础设施**（复用已绑的 VOTES KV
+和 WEB_SECRET）。
+
+## 一次请求只花一次 opus —— 三道闸（缺一不可）
+1. **worker 冷却 20min + 在途拒绝**（409/429）。`busy` 状态**清零 accepted_ts**：Mac 拒单=没花额度，
+   不该罚用户等 20 分钟。
+2. **poller 游标先写后跑**。KV 最终一致（实测 82s），已认领的请求会再回来一次；游标（而非服务端）
+   是权威。崩溃则跳过该请求，**宁可漏跑不可双花**。
+3. **管线自身 RunLock**（新增只读探针 `core/lock.py:is_held`，与 `acquire` 共用 `_live` 谓词）。
+
+## 血泪坑（不记住就会再犯）
+- **`NO_PROXY='*'` 会穿透**：run-serve.sh 为钉钉长连接剥了全部代理并设 `NO_PROXY='*'`。子进程
+  run-daily.sh 虽会重新 source .env 拿回 HTTPS_PROXY，但 `NO_PROXY='*'` 幸存 → `requests` 对
+  **所有** host 绕过代理 → 手动跑会复现「28 源 0 存活」，正是这个按钮要防的事故。
+  `trigger._child_env()` 专门剥它，`test_child_env_drops_no_proxy` 锁死。
+- **回报 note 不能夹私货**：子进程 stderr 可能带代理 URL（含账密）、wrangler 本地路径。
+  失败只回「管线退出码 N — 见 Mac 上的 radar.log」，成功回 last_run.json 的非密字段
+  （篇数/深读数/已投递渠道/是否降级）。`test_run_summary_note_carries_no_paths_or_secrets` 锁死。
+- **KV 滞后会让按钮闪回「待命」**：页面记住自己 POST 的时间戳，服务端 state 比它旧就仍显示「已排队」。
+
+## 刻意不做
+- 不给触发单独的 secret/登录：谁拿到主页 URL 谁能触发（与「谁拿到就能读全部详解」同一信封）；
+  护栏放服务端（冷却 + RunLock），不放 UI。
+- `trigger_api` 与 `vote_api` **分开开关**：投一票免费，点一次触发要跑满一轮 opus 深读。
+- 不动 launchd 定时跑（是否停用留用户拍板）；不引 Durable Objects（KV 已够，最终一致可设计规避）。
