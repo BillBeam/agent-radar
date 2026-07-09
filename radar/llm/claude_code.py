@@ -114,13 +114,22 @@ class ClaudeCodeLLM(LLMClient):
             cmd += ["--system-prompt", system]
         env = dict(os.environ)
         env.pop("ANTHROPIC_API_KEY", None)  # force subscription, never API billing
-        # CLI 2.1.204's byte watchdog aborts at 300s of stream silence — and heavy prompts
-        # (80K grounding) leave opus silent PAST that before its first byte → "API Error:
-        # Connection closed mid-response" (string lives in the CLI binary; killed all 9
-        # fresh deepreads on 07-08). Var names verified via `strings` on the binary —
-        # docs/blogs circulate a wrong name without BYTE_. Align both knobs with OUR call
-        # timeout so this wrapper stays the single deadline owner.
+        # The CLI aborts a request after 300s of stream silence — and heavy prompts (80K
+        # grounding) leave opus silent PAST that before its first byte → "API Error:
+        # Connection closed mid-response". There are TWO watchdogs, and the effective
+        # deadline is the MIN of both (2.1.205, decompiled):
+        #     Io = max(CLAUDE_STREAM_IDLE_TIMEOUT_MS || 0, 300_000)      # floor 300s
+        #     No = min( mSi(),  streamWatchdogOn ? Io : Infinity )       # mSi() reads BYTE_
+        # An earlier fix set only CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS ("docs circulate a wrong
+        # name without BYTE_") — mSi() rose to our timeout and Math.min silently clamped it
+        # back to Io=300_000. The mitigation looked applied and never was: every opus call
+        # over 300s still died at 303.7s (12/15 in the 07-09 00:20 run; every SUCCESSFUL opus
+        # call in the whole trace history is under 300s — a perfect ceiling).
+        # BOTH names must be set, aligned to OUR call timeout, so this wrapper stays the
+        # single deadline owner. Verified by `strings` on the pinned binary; re-check on a
+        # CLI upgrade (2.1.205 auto-installed on 07-08 with AGENT_RADAR_CLAUDE_BIN unset).
         env["CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS"] = str(int(timeout * 1000))
+        env["CLAUDE_STREAM_IDLE_TIMEOUT_MS"] = str(int(timeout * 1000))
         env["API_TIMEOUT_MS"] = str(int(timeout * 1000))
         env["DISABLE_AUTOUPDATER"] = "1"   # a pinned binary must never self-update mid-run
         _NEUTRAL_CWD.mkdir(parents=True, exist_ok=True)
